@@ -1,14 +1,25 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BoardInfo {
+    pub vendor: String,
+    pub model: String,
+    pub bios_version: Option<String>,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SupportStatus {
+    NotDetected,
+    Detected,
+    Readable,
+    Writable,
+    Unverified,
+}
 
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Capability {
+    Temperature,
+    FanRpm,
+    FanPwm,
+    CpuPower,
+    GpuPower,
+    Lighting,
 }

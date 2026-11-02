@@ -1,14 +1,23 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
+use asusio_types::BoardInfo;
+use std::{fs, io, path::Path};
+
+fn read_field(path: &Path) -> io::Result<String> {
+    Ok(fs::read_to_string(path)?.trim().to_owned())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+pub fn discover_board() -> io::Result<BoardInfo> {
+    let root = Path::new("/sys/class/dmi/id");
 
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
+    let vendor = read_field(&root.join("board_vendor"))?;
+    let model = read_field(&root.join("board_name"))?;
+
+    let bios_version = read_field(&root.join("bios_version"))
+        .ok()
+        .filter(|value| !value.is_empty());
+
+    Ok(BoardInfo {
+        vendor,
+        model,
+        bios_version,
+    })
 }
