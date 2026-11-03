@@ -27,8 +27,9 @@ cargo test --workspace
 cargo clippy --workspace --all-targets
 ```
 
-Early versions are read-only. Hardware writes are disabled
-until backend compatibility and recovery behavior are verified.
+Discovery and descriptor inspection are read-only. The `lighting raw-output`
+research command can write an explicit vendor payload only with `--execute`.
+The vendor color protocol has not been verified.
 
 ## Sensor output
 
@@ -69,3 +70,27 @@ the capabilities derived from readable hwmon sensors and matching USB/HID IDs.
 The JSON output contains `schema_version: 1`, `capabilities`, and `warnings`.
 Successful sensor reads verify read access only. USB/HID ID matches are
 candidates; they do not establish protocol or RGB control support.
+
+## HID report descriptor diagnostics
+
+Use `asusio hid-descriptor <device-id>` or add `--json` to inspect the
+read-only report layout from `/sys/bus/hid/devices/<device-id>/report_descriptor`.
+Get the device ID from `asusio devices --hid`. This command reports Input,
+Output, and Feature payload bits and bytes separately from transfer bytes;
+transfer bytes include the one-byte Report ID prefix when present. JSON uses
+an independent `descriptor` object with `schema_version: 1` and does not
+change the `HidDevice` output from `devices --hid --json`.
+
+## Native Aura HID transport
+
+Use `asusio lighting probe <device-id>` to validate the detected
+`0b05:1cd2` Aura interface and its 63-byte Output payload with Report ID
+`0x41`. The probe reads only the sysfs report descriptor and reports whether
+the corresponding `/dev/hidraw*` node exists.
+
+`asusio lighting raw-output <device-id> <126-hex-digits>` validates an
+explicit 63-byte vendor payload without sending it. Add `--execute` to send
+one 64-byte HID Output Report (Report ID followed by the payload) through the
+detected hidraw node. This low-level command does not encode RGB colors or
+effects. Use only a payload whose meaning has been verified for this exact
+device. No hidraw number is fixed in the program.

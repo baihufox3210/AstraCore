@@ -1,4 +1,5 @@
 pub mod hid;
+pub mod hid_descriptor;
 pub mod hwmon;
 pub mod pci;
 pub mod usb;

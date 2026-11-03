@@ -56,6 +56,7 @@ dependencies = [
 name = "asusio"
 version = "0.1.0"
 dependencies = [
+ "asusio-backends",
  "asusio-core",
  "asusio-discovery",
  "asusio-types",
@@ -66,6 +67,10 @@ dependencies = [
 [[package]]
 name = "asusio-backends"
 version = "0.1.0"
+dependencies = [
+ "asusio-discovery",
+ "asusio-types",
+]
 
 [[package]]
 name = "asusio-core"
@@ -79,6 +84,7 @@ name = "asusio-discovery"
 version = "0.1.0"
 dependencies = [
  "asusio-types",
+ "serde",
 ]
 
 [[package]]

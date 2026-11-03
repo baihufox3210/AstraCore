@@ -5,6 +5,8 @@ license.workspace = true
 version.workspace = true
 
 [dependencies]
+asusio-discovery = { version = "0.1.0", path = "../asusio-discovery" }
+asusio-types = { version = "0.1.0", path = "../asusio-types" }
 
 [lints]
 workspace = true

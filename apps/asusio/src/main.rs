@@ -1,11 +1,12 @@
+use asusio_backends::aura_hid::{inspect_aura_interface, write_raw_output};
 use asusio_core::detect_capabilities;
 use asusio_discovery::{
-    discover_board, hid::discover_hid_report, hwmon::discover_hwmon_report,
-    pci::discover_pci_report, usb::discover_usb_report,
+    discover_board, hid::discover_hid_report, hid_descriptor::parse_hid_report_descriptor,
+    hwmon::discover_hwmon_report, pci::discover_pci_report, usb::discover_usb_report,
 };
 use asusio_types::{DiscoveryWarning, SensorValue};
 use clap::{Parser, Subcommand};
-use std::path::Path;
+use std::{fs, io, path::Path};
 
 #[derive(Parser)]
 #[command(
@@ -47,6 +48,52 @@ enum Commands {
         #[arg(long)]
         json: bool,
     },
+
+    /// Inspect a HID report descriptor from sysfs without accessing hidraw
+    HidDescriptor {
+        /// HID sysfs device ID, as shown by `asusio devices --hid`
+        device_id: String,
+        /// Print machine-readable JSON
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Inspect or send a native Aura HID Output Report
+    Lighting {
+        #[command(subcommand)]
+        action: LightingAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum LightingAction {
+    /// Validate the Aura HID interface without writing to it
+    Probe { device_id: String },
+    /// Send a 63-byte vendor payload; requires --execute
+    RawOutput {
+        device_id: String,
+        /// Exactly 126 hexadecimal digits (63 payload bytes, excluding Report ID)
+        payload_hex: String,
+        /// Actually write to the HID device
+        #[arg(long)]
+        execute: bool,
+    },
+}
+
+fn parse_hex_payload(value: &str) -> Result<Vec<u8>, &'static str> {
+    if value.len() != 126 || !value.is_ascii() {
+        return Err("payload must contain exactly 126 hexadecimal digits");
+    }
+    value
+        .as_bytes()
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|pair| {
+            let hex = std::str::from_utf8(pair).map_err(|_| "invalid UTF-8 payload")?;
+            u8::from_str_radix(hex, 16).map_err(|_| "payload contains non-hexadecimal digits")
+        })
+        .collect()
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -241,6 +288,114 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             print_warnings(&warnings);
         }
+        Commands::HidDescriptor { device_id, json } => {
+            let root = Path::new("/sys/bus/hid/devices");
+            let devices = discover_hid_report(root)?;
+            if !devices
+                .devices
+                .iter()
+                .any(|device| device.device_id == device_id)
+            {
+                return Err(
+                    io::Error::new(io::ErrorKind::NotFound, "HID device ID not found").into(),
+                );
+            }
+
+            let descriptor = fs::read(root.join(&device_id).join("report_descriptor"))?;
+            let info = match parse_hid_report_descriptor(&descriptor) {
+                Ok(info) => info,
+                Err(error) => {
+                    if json {
+                        println!(
+                            "{}",
+                            serde_json::to_string_pretty(&serde_json::json!({
+                                "schema_version": 1,
+                                "device_id": device_id,
+                                "error": error,
+                            }))?
+                        );
+                    }
+                    return Err(Box::new(error));
+                }
+            };
+
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "schema_version": 1,
+                        "device_id": device_id,
+                        "descriptor": info,
+                    }))?
+                );
+            } else {
+                println!("HID Report Descriptor: {device_id}");
+                println!("Size: {} bytes", info.descriptor_size_bytes);
+                println!("Uses Report IDs: {}", info.uses_report_ids);
+                println!("Long items skipped: {}", info.long_items_skipped);
+                for report in info.reports {
+                    let id = report
+                        .report_id
+                        .map(|id| format!("0x{id:02x}"))
+                        .unwrap_or_else(|| "none".to_owned());
+                    println!(
+                        "  {:?} ID={} payload={} bits ({} bytes), transfer={} bytes",
+                        report.report_type,
+                        id,
+                        report.payload_bits,
+                        report.payload_bytes,
+                        report.transfer_bytes,
+                    );
+                }
+            }
+        }
+        Commands::Lighting { action } => {
+            let (device_id, payload) = match &action {
+                LightingAction::Probe { device_id } => (device_id, None),
+                LightingAction::RawOutput {
+                    device_id,
+                    payload_hex,
+                    ..
+                } => (device_id, Some(parse_hex_payload(payload_hex)?)),
+            };
+            let root = Path::new("/sys/bus/hid/devices");
+            let devices = discover_hid_report(root)?;
+            let device = devices
+                .devices
+                .iter()
+                .find(|device| &device.device_id == device_id)
+                .ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::NotFound, "HID device ID not found")
+                })?;
+            let info = inspect_aura_interface(device, root)?;
+            println!(
+                "Aura HID: {} (Output Report ID 0x41, payload 63 bytes, transfer 64 bytes)",
+                device.device_id
+            );
+            if let Some(payload) = payload {
+                if let LightingAction::RawOutput { execute, .. } = action {
+                    if execute {
+                        write_raw_output(device, root, &payload)?;
+                        println!("Output Report written");
+                    } else {
+                        println!("Validated payload; use --execute to write it");
+                    }
+                }
+            } else {
+                println!("Descriptor: {} bytes", info.descriptor_size_bytes);
+                println!(
+                    "hidraw: {}",
+                    device.hidraw_path.as_deref().unwrap_or("unavailable")
+                );
+                println!(
+                    "hidraw node exists: {}",
+                    device
+                        .hidraw_path
+                        .as_deref()
+                        .is_some_and(|path| Path::new(path).exists())
+                );
+            }
+        }
     }
 
     Ok(())
@@ -254,6 +409,7 @@ fn print_warnings(warnings: &[DiscoveryWarning]) {
 
 #[cfg(test)]
 mod tests {
+    use super::parse_hex_payload;
     use asusio_types::SensorValue;
 
     #[test]
@@ -280,5 +436,12 @@ mod tests {
                 "rpm": 1200
             })
         );
+    }
+
+    #[test]
+    fn raw_payload_requires_exact_hex_length() {
+        assert_eq!(parse_hex_payload(&"ab".repeat(63)).unwrap(), vec![0xab; 63]);
+        assert!(parse_hex_payload(&"ab".repeat(62)).is_err());
+        assert!(parse_hex_payload(&"gg".repeat(63)).is_err());
     }
 }
