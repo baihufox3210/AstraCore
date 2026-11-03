@@ -38,3 +38,12 @@ programmatic access. JSON is an array of devices with `sysfs_path`,
 and a tagged `value`: `kind: "temperature"` with `milli_celsius`, or
 `kind: "fan_speed_rpm"` with `rpm`. Devices without readable sensors are
 omitted.
+
+## Device output
+
+Use `asusio devices` to list detected PCI and USB devices, or
+`asusio devices --json` to read them as a JSON object with `pci` and `usb`
+arrays. PCI entries contain `address`, `vendor_id`, `device_id`, and
+`class_id`. USB entries contain `sysfs_id`, `vendor_id`, `product_id`,
+`manufacturer`, and `product`. Missing or blank optional USB names are
+represented as `null`; devices without required IDs are omitted.

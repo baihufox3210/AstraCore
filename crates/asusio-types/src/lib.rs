@@ -48,3 +48,20 @@ pub struct HwmonDevice {
     pub display_name: String,
     pub sensors: Vec<SensorReading>,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct PciDevice {
+    pub address: String,
+    pub vendor_id: String,
+    pub device_id: String,
+    pub class_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct UsbDevice {
+    pub sysfs_id: String,
+    pub vendor_id: String,
+    pub product_id: String,
+    pub manufacturer: Option<String>,
+    pub product: Option<String>,
+}

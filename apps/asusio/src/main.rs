@@ -1,4 +1,6 @@
-use asusio_discovery::{discover_board, hwmon::discover_hwmon};
+use asusio_discovery::{
+    discover_board, hwmon::discover_hwmon, pci::discover_pci, usb::discover_usb,
+};
 use asusio_types::SensorValue;
 use clap::{Parser, Subcommand};
 use std::path::Path;
@@ -21,6 +23,13 @@ enum Commands {
 
     /// Display hardware sensor readings
     Sensors {
+        /// Print machine-readable JSON
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// List detected PCI and USB devices
+    Devices {
         /// Print machine-readable JSON
         #[arg(long)]
         json: bool,
@@ -55,6 +64,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if index > 0 {
                     println!();
                 }
+
                 println!("[{}]", device.display_name);
 
                 for sensor in device.sensors {
@@ -74,6 +84,42 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         }
+
+        Commands::Devices { json } => {
+            let pci = discover_pci(Path::new("/sys/bus/pci/devices"))?;
+            let usb = discover_usb(Path::new("/sys/bus/usb/devices"))?;
+
+            if json {
+                let output = serde_json::json!({
+                    "pci": pci,
+                    "usb": usb,
+                });
+
+                println!("{}", serde_json::to_string_pretty(&output)?);
+                return Ok(());
+            }
+
+            println!("PCI Devices ({})", pci.len());
+
+            for device in &pci {
+                println!(
+                    "  {}  {}:{}  class={}",
+                    device.address, device.vendor_id, device.device_id, device.class_id,
+                );
+            }
+
+            println!("\nUSB Devices ({})", usb.len());
+
+            for device in &usb {
+                println!(
+                    "  {}  {}:{}  {}",
+                    device.sysfs_id,
+                    device.vendor_id,
+                    device.product_id,
+                    device.product.as_deref().unwrap_or("Unknown"),
+                );
+            }
+        }
     }
 
     Ok(())
@@ -89,15 +135,23 @@ mod tests {
             milli_celsius: 42500,
         })
         .unwrap();
+
         let fan = serde_json::to_value(SensorValue::FanSpeedRpm { rpm: 1200 }).unwrap();
 
         assert_eq!(
             temperature,
-            serde_json::json!({ "kind": "temperature", "milli_celsius": 42500 })
+            serde_json::json!({
+                "kind": "temperature",
+                "milli_celsius": 42500
+            })
         );
+
         assert_eq!(
             fan,
-            serde_json::json!({ "kind": "fan_speed_rpm", "rpm": 1200 })
+            serde_json::json!({
+                "kind": "fan_speed_rpm",
+                "rpm": 1200
+            })
         );
     }
 }

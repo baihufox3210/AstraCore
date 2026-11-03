@@ -1,4 +1,6 @@
 pub mod hwmon;
+pub mod pci;
+pub mod usb;
 
 use asusio_types::BoardInfo;
 use std::{fs, io, path::Path};
