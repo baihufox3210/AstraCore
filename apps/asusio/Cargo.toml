@@ -6,7 +6,9 @@ version.workspace = true
 
 [dependencies]
 asusio-discovery = { version = "0.1.0", path = "../../crates/asusio-discovery" }
+asusio-types = { version = "0.1.0", path = "../../crates/asusio-types" }
 clap = { version = "4.6.7", features = ["derive"] }
+serde_json = "1"
 
 [lints]
 workspace = true

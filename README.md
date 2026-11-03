@@ -29,3 +29,12 @@ cargo clippy --workspace --all-targets
 
 Early versions are read-only. Hardware writes are disabled
 until backend compatibility and recovery behavior are verified.
+
+## Sensor output
+
+Use `asusio sensors` for terminal output or `asusio sensors --json` for
+programmatic access. JSON is an array of devices with `sysfs_path`,
+`device_id`, `name`, `display_name`, and `sensors`. Each sensor has a `label`
+and a tagged `value`: `kind: "temperature"` with `milli_celsius`, or
+`kind: "fan_speed_rpm"` with `rpm`. Devices without readable sensors are
+omitted.

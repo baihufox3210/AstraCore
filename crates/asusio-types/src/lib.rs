@@ -1,3 +1,6 @@
+use serde::Serialize;
+use std::path::PathBuf;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BoardInfo {
     pub vendor: String,
@@ -22,4 +25,26 @@ pub enum Capability {
     CpuPower,
     GpuPower,
     Lighting,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SensorValue {
+    Temperature { milli_celsius: i64 },
+    FanSpeedRpm { rpm: u64 },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SensorReading {
+    pub label: String,
+    pub value: SensorValue,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct HwmonDevice {
+    pub sysfs_path: PathBuf,
+    pub device_id: String,
+    pub name: String,
+    pub display_name: String,
+    pub sensors: Vec<SensorReading>,
 }

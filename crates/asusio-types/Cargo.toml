@@ -5,6 +5,7 @@ license.workspace = true
 version.workspace = true
 
 [dependencies]
+serde = { version = "1", features = ["derive"] }
 
 [lints]
 workspace = true

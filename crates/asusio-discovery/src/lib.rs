@@ -1,3 +1,5 @@
+pub mod hwmon;
+
 use asusio_types::BoardInfo;
 use std::{fs, io, path::Path};
 
