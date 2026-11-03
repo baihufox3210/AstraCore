@@ -1,3 +1,4 @@
+pub mod hid;
 pub mod hwmon;
 pub mod pci;
 pub mod usb;

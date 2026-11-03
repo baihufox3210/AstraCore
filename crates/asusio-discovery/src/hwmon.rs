@@ -1,4 +1,4 @@
-use asusio_types::{HwmonDevice, SensorReading, SensorValue};
+use asusio_types::{DiscoveryReport, DiscoveryWarning, HwmonDevice, SensorReading, SensorValue};
 use std::{fs, io, path::Path};
 
 fn read_trimmed(path: &Path) -> io::Result<String> {
@@ -54,7 +54,11 @@ fn identify_device(path: &Path, name: &str) -> (std::path::PathBuf, String, Stri
 }
 
 pub fn discover_hwmon(root: &Path) -> io::Result<Vec<HwmonDevice>> {
-    let mut devices = Vec::new();
+    Ok(discover_hwmon_report(root)?.devices)
+}
+
+pub fn discover_hwmon_report(root: &Path) -> io::Result<DiscoveryReport<HwmonDevice>> {
+    let mut report = DiscoveryReport::default();
 
     for entry in fs::read_dir(root)? {
         let entry = entry?;
@@ -69,12 +73,20 @@ pub fn discover_hwmon(root: &Path) -> io::Result<Vec<HwmonDevice>> {
         }
 
         let Ok(name) = read_trimmed(&path.join("name")) else {
+            report.warnings.push(DiscoveryWarning {
+                path,
+                reason: "missing or unreadable hwmon name".to_owned(),
+            });
             continue;
         };
 
         let mut sensors = Vec::new();
 
         let Ok(attributes) = fs::read_dir(&path) else {
+            report.warnings.push(DiscoveryWarning {
+                path,
+                reason: "cannot list hwmon attributes".to_owned(),
+            });
             continue;
         };
 
@@ -87,9 +99,17 @@ pub fn discover_hwmon(root: &Path) -> io::Result<Vec<HwmonDevice>> {
 
             let sensor = if let Some(n) = channel_number(&filename, "temp") {
                 let Ok(value) = read_trimmed(&attr.path()) else {
+                    report.warnings.push(DiscoveryWarning {
+                        path: attr.path(),
+                        reason: "cannot read temperature value".to_owned(),
+                    });
                     continue;
                 };
                 let Ok(value) = value.parse::<i64>() else {
+                    report.warnings.push(DiscoveryWarning {
+                        path: attr.path(),
+                        reason: "invalid temperature value".to_owned(),
+                    });
                     continue;
                 };
 
@@ -106,9 +126,17 @@ pub fn discover_hwmon(root: &Path) -> io::Result<Vec<HwmonDevice>> {
                 }
             } else if let Some(n) = channel_number(&filename, "fan") {
                 let Ok(value) = read_trimmed(&attr.path()) else {
+                    report.warnings.push(DiscoveryWarning {
+                        path: attr.path(),
+                        reason: "cannot read fan speed".to_owned(),
+                    });
                     continue;
                 };
                 let Ok(value) = value.parse::<u64>() else {
+                    report.warnings.push(DiscoveryWarning {
+                        path: attr.path(),
+                        reason: "invalid fan speed".to_owned(),
+                    });
                     continue;
                 };
 
@@ -132,28 +160,34 @@ pub fn discover_hwmon(root: &Path) -> io::Result<Vec<HwmonDevice>> {
 
         if !sensors.is_empty() {
             let (sysfs_path, device_id, display_name) = identify_device(&path, &name);
-            devices.push(HwmonDevice {
+            report.devices.push(HwmonDevice {
                 sysfs_path,
                 device_id,
                 name,
                 display_name,
                 sensors,
             });
+        } else {
+            report.warnings.push(DiscoveryWarning {
+                path,
+                reason: "no readable temperature or fan sensors".to_owned(),
+            });
         }
     }
 
-    devices.sort_by(|a, b| {
+    report.devices.sort_by(|a, b| {
         a.name
             .cmp(&b.name)
             .then_with(|| a.device_id.cmp(&b.device_id))
     });
+    report.sort_warnings();
 
-    Ok(devices)
+    Ok(report)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{channel_number, discover_hwmon, identify_device};
+    use super::{channel_number, discover_hwmon, discover_hwmon_report, identify_device};
     use asusio_types::{HwmonDevice, SensorReading, SensorValue};
     use std::{fs, os::unix::fs::symlink, time::SystemTime};
 
@@ -185,6 +219,7 @@ mod tests {
         fs::write(empty.join("name"), "empty\n").unwrap();
 
         let sysfs_path = fs::canonicalize(&device).unwrap();
+        let report = discover_hwmon_report(&root).unwrap();
         let result = discover_hwmon(&root).unwrap();
         fs::remove_dir_all(&root).unwrap();
 
@@ -208,6 +243,13 @@ mod tests {
                     },
                 ],
             }]
+        );
+        assert_eq!(report.warnings.len(), 2);
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|warning| warning.reason == "invalid temperature value")
         );
     }
 

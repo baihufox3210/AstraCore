@@ -65,3 +65,42 @@ pub struct UsbDevice {
     pub manufacturer: Option<String>,
     pub product: Option<String>,
 }
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct HidDevice {
+    pub device_id: String,
+    pub vendor_id: String,
+    pub product_id: String,
+    pub name: String,
+    pub driver: Option<String>,
+    pub hidraw_path: Option<String>,
+    pub report_descriptor_size: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DiscoveryWarning {
+    pub path: PathBuf,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DiscoveryReport<T> {
+    pub devices: Vec<T>,
+    pub warnings: Vec<DiscoveryWarning>,
+}
+
+impl<T> Default for DiscoveryReport<T> {
+    fn default() -> Self {
+        Self {
+            devices: Vec::new(),
+            warnings: Vec::new(),
+        }
+    }
+}
+
+impl<T> DiscoveryReport<T> {
+    pub fn sort_warnings(&mut self) {
+        self.warnings
+            .sort_by(|a, b| a.path.cmp(&b.path).then_with(|| a.reason.cmp(&b.reason)));
+    }
+}
