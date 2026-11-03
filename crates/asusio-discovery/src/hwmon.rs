@@ -53,11 +53,9 @@ fn identify_device(path: &Path, name: &str) -> (std::path::PathBuf, String, Stri
     (sysfs_path, device_id, display_name)
 }
 
-pub fn discover_hwmon(root: &Path) -> io::Result<Vec<HwmonDevice>> {
-    Ok(discover_hwmon_report(root)?.devices)
-}
-
-pub fn discover_hwmon_report(root: &Path) -> io::Result<DiscoveryReport<HwmonDevice>> {
+/// Scan `root` (normally [`crate::sysfs::HWMON`]); unreadable entries become warnings.
+pub fn discover(root: impl AsRef<Path>) -> io::Result<DiscoveryReport<HwmonDevice>> {
+    let root = root.as_ref();
     let mut report = DiscoveryReport::default();
 
     for entry in fs::read_dir(root)? {
@@ -187,7 +185,7 @@ pub fn discover_hwmon_report(root: &Path) -> io::Result<DiscoveryReport<HwmonDev
 
 #[cfg(test)]
 mod tests {
-    use super::{channel_number, discover_hwmon, discover_hwmon_report, identify_device};
+    use super::{channel_number, discover, identify_device};
     use asusio_types::{HwmonDevice, SensorReading, SensorValue};
     use std::{fs, os::unix::fs::symlink, time::SystemTime};
 
@@ -219,8 +217,8 @@ mod tests {
         fs::write(empty.join("name"), "empty\n").unwrap();
 
         let sysfs_path = fs::canonicalize(&device).unwrap();
-        let report = discover_hwmon_report(&root).unwrap();
-        let result = discover_hwmon(&root).unwrap();
+        let report = discover(&root).unwrap();
+        let result = report.devices.clone();
         fs::remove_dir_all(&root).unwrap();
 
         assert_eq!(

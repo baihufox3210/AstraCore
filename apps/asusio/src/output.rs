@@ -1,0 +1,105 @@
+//! Shared presentation and argument parsing for CLI commands.
+use asusio_backends::aura_hid;
+use asusio_types::{DiscoveryWarning, Rgb};
+use serde_json::Value;
+
+pub type CliResult = Result<(), Box<dyn std::error::Error>>;
+
+/// Every JSON document carries `schema_version: 1`.
+pub fn print_json(mut document: Value) -> CliResult {
+    if let Value::Object(fields) = &mut document {
+        fields.insert("schema_version".into(), 1.into());
+    }
+    println!("{}", serde_json::to_string_pretty(&document)?);
+    Ok(())
+}
+
+pub fn print_warnings(warnings: &[DiscoveryWarning]) {
+    for warning in warnings {
+        eprintln!("warning: {}: {}", warning.path.display(), warning.reason);
+    }
+}
+
+pub fn preview_only(action: &str) {
+    println!("Preview only; add --execute to {action}");
+}
+
+pub fn hex_bytes(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn decode_hex(value: &str) -> Option<Vec<u8>> {
+    if !value.len().is_multiple_of(2) || !value.is_ascii() {
+        return None;
+    }
+    (0..value.len())
+        .step_by(2)
+        .map(|index| u8::from_str_radix(&value[index..index + 2], 16).ok())
+        .collect()
+}
+
+/// Clap value parsers: invalid input is rejected before any command runs.
+pub mod parse {
+    use super::*;
+
+    pub fn rgb(value: &str) -> Result<Rgb, String> {
+        asusio_core::lighting::parse_hex(value).map_err(|error| error.to_string())
+    }
+
+    /// Hexadecimal byte with an optional `0x` prefix, e.g. `67` or `0x70`.
+    pub fn hex_u8(value: &str) -> Result<u8, String> {
+        u8::from_str_radix(value.trim_start_matches("0x"), 16)
+            .map_err(|_| "expected a hexadecimal byte, e.g. 67 or 0x70".to_owned())
+    }
+
+    /// Exactly 126 hexadecimal digits: one 63-byte Aura payload without the Report ID.
+    pub fn aura_payload(value: &str) -> Result<aura_hid::Payload, String> {
+        decode_hex(value)
+            .and_then(|bytes| bytes.try_into().ok())
+            .ok_or_else(|| {
+                format!(
+                    "payload must contain exactly {} hexadecimal digits",
+                    aura_hid::PAYLOAD_BYTES * 2
+                )
+            })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse;
+    use asusio_types::SensorValue;
+
+    #[test]
+    fn sensor_json_carries_type_and_units() {
+        let temperature = serde_json::to_value(SensorValue::Temperature {
+            milli_celsius: 42500,
+        })
+        .unwrap();
+        let fan = serde_json::to_value(SensorValue::FanSpeedRpm { rpm: 1200 }).unwrap();
+        assert_eq!(
+            temperature,
+            serde_json::json!({"kind": "temperature", "milli_celsius": 42500})
+        );
+        assert_eq!(
+            fan,
+            serde_json::json!({"kind": "fan_speed_rpm", "rpm": 1200})
+        );
+    }
+
+    #[test]
+    fn raw_payload_requires_exact_hex_length() {
+        assert_eq!(parse::aura_payload(&"ab".repeat(63)).unwrap(), [0xab; 63]);
+        assert!(parse::aura_payload(&"ab".repeat(62)).is_err());
+        assert!(parse::aura_payload(&"gg".repeat(63)).is_err());
+    }
+
+    #[test]
+    fn parses_colors_and_addresses() {
+        assert_eq!(parse::rgb("FF8000").unwrap(), [0xff, 0x80, 0]);
+        assert!(parse::rgb("FF80").is_err());
+        assert_eq!(parse::hex_u8("0x67").unwrap(), 0x67);
+        assert_eq!(parse::hex_u8("70").unwrap(), 0x70);
+        assert!(parse::hex_u8("100").is_err());
+    }
+}

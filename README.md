@@ -31,6 +31,26 @@ Discovery and descriptor inspection are read-only. The `lighting raw-output`
 research command can write an explicit vendor payload only with `--execute`.
 The vendor color protocol has not been verified.
 
+## Fan control
+
+On the tested NCT6799 board, load the kernel's `nct6775` driver to expose fan
+tachometers and PWM channels. To load it at every boot, put `nct6775` on its
+own line in `/etc/modules-load.d/nct6775.conf`. `asusio fans list` shows
+tachometers and PWM channels separately; `--json` includes `schema_version: 1`.
+The PWM number has not been mapped to a physical fan header, so do not infer
+that `fanN` belongs to `pwmN`.
+
+`asusio fans set <pwm-number> <percent>` previews a 30–100% manual duty;
+`--execute` applies it. `asusio fans auto <pwm-number>` previews restoration
+of the observed Smart Fan IV firmware mode (`pwmN_enable=5`); add `--execute`
+to apply it. Identify the physical channel before writing, especially for CPU
+fans and pumps. Sysfs writes require appropriate permissions. BIOS Q-Fan
+remains available for firmware-managed fan curves. The NCT6775 driver rejects
+`pwmN` writes in automatic mode, so the manual command switches to
+`pwmN_enable=1` before setting duty and checks both values afterward.
+Rebuild the CLI after changing its source; keep shell comments on separate
+lines when using an interactive zsh session.
+
 ## Sensor output
 
 Use `asusio sensors` for terminal output or `asusio sensors --json` for
@@ -83,6 +103,28 @@ change the `HidDevice` output from `devices --hid --json`.
 
 ## Native Aura HID transport
 
+`asusio lighting aura-static <device-id> <RRGGBB> --headers 0,1,2` previews
+one vendor-derived static report per selected ARGB header. These header indexes
+are unrelated to hwmon PWM numbers. Add `--execute` to re-query the advertised
+header range and WDL state before writing. The command refuses enabled WDL
+and sends command `05`, strip 0, Static effect 1, and GRB color bytes, as traced
+in ASUS MB Manager's `MyAacArgbLedDevice::SetEffect`. It does not send WDL
+ownership changes, S5 effects, or explicit persistent-save commands. Static ARGB color changes have been physically verified on the B850-A
+controller. Other controllers, effects and persistence are not established.
+
+`asusio lighting aura-config <device-id>` previews the configuration query
+traced in the official ASUS MB Manager 1.00.11 HAL. `--execute` sends one
+64-byte report beginning `41 03 00` and waits at most two seconds for a
+64-byte `41 83` response. This is a protocol diagnostic, not a color command;
+it does not send mode, color, or persistent-save commands. The command's
+meaning is based on static analysis and still requires a device response
+to validate on the local controller. Hidraw read/write permission is required.
+The observed base reply advertises three ARGB configuration entries. Add
+`--details --execute` to also query mainboard configuration (`08`), each
+advertised ARGB entry (`03 01 index`, capped at five), and WDL state (`24`).
+These are getter operations traced in the same HAL; no lighting changes are
+requested. Each request has its own two-second response timeout.
+
 Use `asusio lighting probe <device-id>` to validate the detected
 `0b05:1cd2` Aura interface and its 63-byte Output payload with Report ID
 `0x41`. The probe reads only the sysfs report descriptor and reports whether
@@ -94,3 +136,264 @@ one 64-byte HID Output Report (Report ID followed by the payload) through the
 detected hidraw node. This low-level command does not encode RGB colors or
 effects. Use only a payload whose meaning has been verified for this exact
 device. No hidraw number is fixed in the program.
+
+## Native lighting backends
+
+OpenRGB CLI integration has been removed. No OpenRGB process or server is needed.
+`asusio lighting list [--json]` reads USB/HID metadata and descriptors to list
+native interfaces; it does not test write permissions. HID IDs can change after
+replugging, so use the current list. Existing discovery JSON remains unchanged.
+
+```bash
+cargo build -p asusio
+./target/debug/asusio lighting list
+./target/debug/asusio lighting keyboard-static <vendor-hid-id> FF0000
+./target/debug/asusio lighting screen-static <usb-sysfs-id> FF0000
+./target/debug/asusio lighting aura-board-static <aura-hid-id> FF0000 --locations 0,1
+```
+
+Each command previews by default. Add `--execute` to write using device access
+permissions. `keyboard-static` supports only Scope II RX `0b05:1ab5`, with the
+vendor `ff00` unnumbered 64-byte Input/Output interface. The hidraw write is 65
+bytes including the required zero report-number prefix. It sends Static at
+100% brightness without a persistent-save command. `screen-static` supports the
+separate `0416:8050` LED USB device (60 LEDs, three bulk OUT packets to endpoint
+1); it never accesses the LCD device `1cbe:a088`. The USB interface is claimed
+temporarily and released on exit, with no driver detachment or reset.
+`aura-board-static` uses onboard location IDs from `aura-config --details`,
+which are distinct from ARGB headers and fan PWM channels. It validates the
+advertised locations and WDL state before writing. Keyboard and onboard static color changes have been physically verified.
+Screen lighting remains pending physical verification.
+
+### ENE GPU and DRAM
+
+```bash
+./target/debug/asusio lighting i2c-list
+./target/debug/asusio lighting ene-probe <bus> <hex-address>
+sudo ./target/debug/asusio lighting ene-probe <bus> <hex-address> --execute
+sudo ./target/debug/asusio lighting ene-static <bus> <hex-address> FF0000 --execute
+```
+
+Use an explicitly identified adapter and RGB address. RTX 3070 Strix has an ENE
+candidate at `0x67` on its NVIDIA I2C adapters; DIMM RGB controllers use separate
+addresses, commonly `0x70`–`0x77`. These are candidates, not confirmed local
+addresses. SPD devices `0x51`/`0x53` are not RGB controllers and are rejected.
+No automatic scan, `I2C_SLAVE_FORCE`, address remapping, Save (`AA`), or EEPROM
+writes are implemented. Probe checks the ENE `A0..AF` signature before writing
+register-selection pointers, then accepts only known firmware names and bounded
+LED counts. Supported profiles are `DIMM_LED-0102`, `DIMM_LED-0103`,
+`AUDA0-E6K5-0101`, and `AUMA0-E6K5-0107`. Unknown firmware is rejected.
+Static control uses the firmware-specific effect buffer in RBG order, disables
+Direct mode, selects Static and applies without Save. Adapter access uses
+`/dev/i2c-N` and requires `i2c-dev`; adapters are not loaded or reconfigured by
+this program. Local ENE probes identified the RTX 3070 at bus 1/address `0x67`
+(`AUMA0-E6K5-0107`, 22 LEDs) and two DIMMs at bus 7/addresses `0x71`, `0x73`
+(`AUDA0-E6K5-0101`, 8 LEDs each). Static red writes completed on all three;
+physical color changes still require confirmation. Bus numbers may change after
+reboot, so recheck adapter metadata and probe identity before use. DIMMs requiring initial address assignment remain unsupported.
+An advisory adapter lock serializes asusio operations; it cannot coordinate with
+unrelated applications that ignore that lock. A failed multi-packet operation
+can leave some LEDs updated; commands stop on the first error without retry.
+
+Protocol references (wire formats independently implemented in Rust):
+
+- [Scope II keyboard](https://gitlab.com/CalcProgrammer1/OpenRGB/-/blob/next/Controllers/AsusAuraUSBController/AsusAuraTUFKeyboardController/AsusAuraTUFKeyboardController.cpp)
+- [Universal Screen LED packets](https://github.com/CalcProgrammer1/OpenRGB/blob/master/Controllers/LianLiController/LianLiUniversalScreenController/LianLiUniversalScreenController.cpp)
+- [ENE registers and firmware profiles](https://github.com/CalcProgrammer1/OpenRGB/blob/master/Controllers/ENESMBusController/ENESMBusController.cpp)
+- [ENE SMBus transport](https://github.com/CalcProgrammer1/OpenRGB/blob/master/Controllers/ENESMBusController/ENESMBusInterface/ENESMBusInterface_i2c_smbus.cpp)
+
+### Screen lighting while lianli-daemon owns USB
+
+The local `lianli-daemon.service` owns the `0416:8050` LED USB node, so a second
+USB claim returns `EBUSY`. Direct USB errors now include the operation and node.
+Use the daemon's native Unix socket explicitly to keep its LCD session running:
+
+```bash
+./target/debug/asusio lighting screen-static 6-9.3 FF0000 --daemon-socket /run/user/1000/lianli-daemon.sock
+./target/debug/asusio lighting screen-static 6-9.3 FF0000 --daemon-socket /run/user/1000/lianli-daemon.sock --execute
+```
+
+This option needs no OpenRGB and does not stop services or detach drivers. It
+queries `GetDaemonInfo` and `GetRgbCapabilities`, verifies the exact device,
+60-LED zone and Static support, then sends a version/instance-bound `Guarded`
+`SetRgbEffect`. This adapter implements only daemon `1.2.4`, protocol `1`, with
+`guarded_writes`; other versions are rejected rather than assumed compatible.
+Responses are bounded to 1 MiB with 3-second read/write timeouts. A successful
+reply acknowledges renderer acceptance, not physical completion. The local
+daemon accepted this request; physical screen lighting still needs confirmation.
+The daemon enforces its own service write gates. Raw USB remains the default
+when no socket is specified; the program never silently switches transports.
+
+IPC references: [request schema](https://github.com/sgtaziz/lian-li-linux/blob/main/crates/lianli-shared/src/ipc.rs),
+[version and instance guards](https://github.com/sgtaziz/lian-li-linux/blob/main/crates/lianli-shared/src/daemon.rs).
+
+### ENE color readback
+
+`asusio lighting ene-state 1 67 --execute` reads Direct/Mode and the active
+RGB buffer after firmware identification, without setting colors or applying
+changes. ENE pointer-selection writes are required for these reads. JSON uses
+`schema_version: 1`; `colors_rgb` decodes the wire RBG order. Register intensities
+are requested values, not measured optical output. On the tested RTX 3070,
+Static white readback was 255/255/255 for all 22 LEDs despite a yellow tint;
+RGBW is not established by that observation. No automatic color correction is
+applied.
+
+## Named lighting control and local calibration
+
+The high-level `lighting set` command applies a host-local configuration, so
+hardware IDs and RGB compensation do not have to be repeated in every command.
+The configured aliases on the tested machine are `fans` (fan LEDs), `board`,
+`keyboard`, `gpu`, `ram-1`, `ram-2`, and `screen`. These aliases control lighting;
+fan speed still uses `fans set` / `fans auto`.
+
+```bash
+./target/debug/asusio lighting targets
+./target/debug/asusio lighting set all 80C0FF
+./target/debug/asusio lighting set gpu FFFFFF
+./target/debug/asusio lighting set all 80C0FF --brightness 50
+```
+
+These commands preview only. To apply all devices, including Aura nodes that
+need elevated permissions, select the user's configuration explicitly:
+
+```bash
+sudo ./target/debug/asusio lighting --config "$HOME/.config/asusio/lighting.json" set all 80C0FF --execute
+```
+
+Under sudo, the program requires `--config` and never silently loads root's
+configuration. Screen control still uses the explicitly configured native
+lianli-daemon socket. Device execution errors are reported individually, other
+targets continue, and any failure makes the command exit unsuccessfully. This
+is not an atomic operation across devices; earlier updates cannot be undone
+automatically. All selected bindings are resolved before color writes start.
+
+Calibration is stored in `$XDG_CONFIG_HOME/asusio/lighting.json`, or
+`$HOME/.config/asusio/lighting.json` when XDG_CONFIG_HOME is unset. An explicit
+`lighting --config PATH` overrides this location. The file has mode 0600 and
+is replaced atomically with file/directory synchronization. It is outside the
+repository and is not written into firmware. A machine-id fingerprint binds it
+to this host; copying the file to another machine causes loading to fail. This
+fingerprint is an accidental-misuse check, not a security or licensing boundary.
+
+The GPU's visually selected white balance is `[48,48,255]` (`3030FF`); other
+targets use neutral `[255,255,255]`. Each channel is calculated as
+`round(input * gain / 255 * brightness / 100)`. Thus requested white `FFFFFF`
+becomes `3030FF` only on the GPU, and requested light blue `80C0FF` becomes
+`1824FF` on the GPU. Pure blue stays blue. This is an empirical channel-gain
+model, not measured colorimetric calibration, and may need further tuning for
+other colors. Brightness ranges from 0 to 100 and can only attenuate output;
+it cannot make an already saturated blue channel brighter.
+
+Change or reset a target's gains as the normal user (no hardware color write):
+
+```bash
+./target/debug/asusio lighting calibrate gpu 3030FF
+./target/debug/asusio lighting calibrate gpu FFFFFF
+./target/debug/asusio lighting set gpu FFFFFF --uncalibrated
+```
+
+The second command disables compensation; the third bypasses it for that
+invocation only. Existing low-level diagnostics such as `ene-static` remain
+raw and do not apply local compensation. Use `lighting set` for calibrated
+control. Calibration persists across rebuilds/reboots and is loaded on each
+managed command; automatic color restoration at boot is not installed.
+
+For initial installation on another machine, prepare a local schema-1 manifest
+with `targets` and no `host_fingerprint`, then run
+`lighting setup --from /path/to/local-manifest.json`. Setup validates and resolves
+bindings, stamps the host fingerprint, and refuses to overwrite an existing
+configuration. `targets --json` shows the complete manifest format. HID bindings
+use VID/PID, physical USB interface identity and descriptor validation, rather
+than transient HID instance numbers. I2C bindings use adapter name and parent
+sysfs path, plus RGB address, expected ENE firmware and LED count. The current
+bus number is resolved on each invocation; the firmware and count are checked
+on the same locked fd before color writes. No bus scan or DIMM address remapping
+is introduced. Changing ports, hardware, firmware or topology may require an
+explicit configuration update. A moved DIMM address with the same firmware and
+LED count cannot be distinguished by this protocol alone.
+
+## Library architecture and integration
+
+Dependencies flow from applications to `asusio-core`, then native backends and
+read-only discovery, with shared data in `asusio-types`. The core owns reusable
+lighting orchestration; applications own argument parsing and presentation.
+
+| Module | Responsibility |
+|---|---|
+| `apps/asusio/src/cli.rs` | Clap command schema; colors, addresses and payloads are parsed here |
+| `apps/asusio/src/commands/` | Presentation per area: `system`, `fans`, `lighting` (named), `diagnostics` (raw) |
+| `apps/asusio/src/output.rs` | Shared JSON envelope, warnings, hex formatting and value parsers |
+| `asusio_core::lighting` | `Store`, `Request`, `plan`/`execute`, `discover_interfaces`, color helpers |
+| `asusio_core::lighting::config` | Configuration schema, host validation, atomic storage |
+| `lighting::runtime` (internal) | Resolve native device identities and dispatch backends |
+| `asusio-backends` | Device protocols and OS transport; each exposes `DEVICE` (USB ID) and `inspect` |
+| `asusio-discovery` | Read-only sysfs scans: `hid::discover`, `usb::discover`, …; default roots in `sysfs` |
+| `asusio-types` | Shared data: `Rgb`, `UsbId`, device records, `DiscoveryReport`, `Capability` |
+
+A Rust application can use the same calibration and identity validation without
+shelling out to the CLI:
+
+```rust,no_run
+use asusio_core::lighting::{self, Request, Store};
+
+fn control() -> std::io::Result<()> {
+    let store = Store::open(None)?; // or Some(path) for an explicit configuration
+    let request = Request::new(lighting::ALL, [128, 192, 255]).brightness(100);
+    let plan = store.plan(&request)?;
+    // Present plan[i].alias() and plan[i].output() to the application's user.
+    // Only execute after the application has authorized the hardware operation.
+    for outcome in lighting::execute(plan) {
+        outcome.result?;
+    }
+    Ok(())
+}
+```
+
+`Request::new(target, rgb)` defaults to full brightness with stored calibration;
+`.brightness(percent)` and `.calibrated(false)` adjust it. `plan` (or
+`Store::plan`) validates the host/configuration, target selector and brightness
+range, then resolves metadata without changing colors. A `PlannedTarget` exposes its
+alias and calibrated output through read-only accessors; execution consumes the
+plan. `execute` returns per-device `Outcome` values with `io::Result<()>` and
+never prints, retries or rolls back. It processes every target before returning
+results, so applications should inspect all outcomes when reporting partial
+success. Resolution is a snapshot, not a reservation; device removal or access
+changes between planning and execution may still cause execution errors.
+`lighting::discover_interfaces()` lists validated native interfaces with their
+`InterfaceKind`, without opening hardware nodes.
+
+The compilable `asusio-core/examples/lighting_preview.rs` demonstrates a complete
+read-only client. Run `cargo run -p asusio-core --example lighting_preview`.
+
+To add a backend, implement its validated transport in `asusio-backends`
+(export a `DEVICE` ID and an `inspect` function), add a configuration variant in
+`lighting::Device`, and extend the runtime resolution/dispatch matches (plus
+`InterfaceKind` if it should appear in `lighting list`). The common plan,
+calibration and error collection then apply to it. Preserve existing serialized
+variant names and schema-1 fields. Hardware-specific settings stay in the
+host-local configuration.
+
+### Shared configuration transactions
+
+Library clients use `asusio_core::lighting::Store` for configuration
+changes. `Store::install` validates and binds a manifest to the current host,
+resolves targets, and refuses to replace an existing configuration.
+`Store::calibrate` locks, reloads, changes one target and atomically saves it.
+The CLI calls these same methods. Direct persistence and native runtime dispatch
+are internal implementation details; use `plan`/`execute` for calibrated control.
+
+```rust,no_run
+use asusio_core::lighting::Store;
+fn save_calibration() -> std::io::Result<()> {
+    Store::open(None)?.calibrate("gpu", [48, 48, 255])
+}
+```
+
+Writers coordinate through a persistent `lighting.json.lock` file (0600).
+Do not delete the lock while clients are running. Readers see complete old or
+new files through atomic replacement. Separate targets updated concurrently
+are preserved because each transaction reloads after acquiring the lock.
+Temporary files use process and operation IDs to avoid collisions between
+multiple stores in one process. Manual editors and older clients that do not
+use the lock are outside this coordination. Configuration changes through the
+Store must run as the normal user; elevated hardware execution remains separate.

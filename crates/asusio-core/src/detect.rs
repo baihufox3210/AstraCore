@@ -1,15 +1,17 @@
 use crate::CapabilityRegistry;
+use asusio_backends::aura_hid;
 use asusio_types::{
     AccessStatus, Capability, DetectionStatus, HidDevice, HwmonDevice, SensorValue, UsbDevice,
 };
 
-fn parse_hex(value: &str) -> Option<u16> {
-    u16::from_str_radix(value.trim_start_matches("0x"), 16).ok()
-}
-
 // Candidate match only: vendor/product IDs do not prove protocol support.
-fn is_aura_candidate(vendor: &str, product: &str) -> bool {
-    parse_hex(vendor) == Some(0x0b05) && parse_hex(product) == Some(0x1cd2)
+const AURA_CANDIDATE: asusio_types::UsbId = aura_hid::DEVICE;
+
+fn candidate(id: &str, device_id: &str, detail: &str) -> Capability {
+    let mut capability = Capability::new(id, Some(device_id.to_owned()));
+    capability.detection = DetectionStatus::Detected;
+    capability.detail = Some(detail.to_owned());
+    capability
 }
 
 fn verified_read_capability(id: &str, device_id: &str) -> Capability {
@@ -52,24 +54,13 @@ pub fn detect_capabilities(
         }
     }
 
-    for device in usb {
-        if is_aura_candidate(&device.vendor_id, &device.product_id) {
-            let mut capability = Capability::new("asus.aura.usb", Some(device.sysfs_id.clone()));
-            capability.detection = DetectionStatus::Detected;
-            capability.detail = Some("vendor/product ID match; protocol unverified".to_owned());
-            registry.register(capability);
-        }
+    const ID_MATCH: &str = "vendor/product ID match; protocol unverified";
+    for device in usb.iter().filter(|device| device.is(AURA_CANDIDATE)) {
+        registry.register(candidate("asus.aura.usb", &device.sysfs_id, ID_MATCH));
     }
 
-    for device in hid {
-        if !is_aura_candidate(&device.vendor_id, &device.product_id) {
-            continue;
-        }
-
-        let mut hid_capability = Capability::new("asus.aura.hid", Some(device.device_id.clone()));
-        hid_capability.detection = DetectionStatus::Detected;
-        hid_capability.detail = Some("vendor/product ID match; protocol unverified".to_owned());
-        registry.register(hid_capability);
+    for device in hid.iter().filter(|device| device.is(AURA_CANDIDATE)) {
+        registry.register(candidate("asus.aura.hid", &device.device_id, ID_MATCH));
 
         let mut rgb_capability =
             Capability::new("asus.aura.rgb.control", Some(device.device_id.clone()));

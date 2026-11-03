@@ -26,11 +26,9 @@ fn read_nonempty(path: &Path, report: &mut DiscoveryReport<PciDevice>) -> Option
     Some(value)
 }
 
-pub fn discover_pci(root: &Path) -> io::Result<Vec<PciDevice>> {
-    Ok(discover_pci_report(root)?.devices)
-}
-
-pub fn discover_pci_report(root: &Path) -> io::Result<DiscoveryReport<PciDevice>> {
+/// Scan `root` (normally [`crate::sysfs::PCI`]); unreadable entries become warnings.
+pub fn discover(root: impl AsRef<Path>) -> io::Result<DiscoveryReport<PciDevice>> {
+    let root = root.as_ref();
     let mut report = DiscoveryReport::default();
 
     for entry in fs::read_dir(root)? {
@@ -60,7 +58,7 @@ pub fn discover_pci_report(root: &Path) -> io::Result<DiscoveryReport<PciDevice>
 
 #[cfg(test)]
 mod tests {
-    use super::{discover_pci, discover_pci_report};
+    use super::discover;
     use std::{fs, time::SystemTime};
 
     #[test]
@@ -83,8 +81,8 @@ mod tests {
         fs::write(root.join("0000:03:00.0/device"), "0x1234\n").unwrap();
         fs::write(root.join("0000:03:00.0/class"), "0x010800\n").unwrap();
 
-        let report = discover_pci_report(&root).unwrap();
-        let devices = discover_pci(&root).unwrap();
+        let report = discover(&root).unwrap();
+        let devices = report.devices.clone();
         fs::remove_dir_all(&root).unwrap();
 
         assert_eq!(devices.len(), 2);

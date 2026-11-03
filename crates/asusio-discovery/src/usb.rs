@@ -29,11 +29,9 @@ fn read_required(path: &Path, report: &mut DiscoveryReport<UsbDevice>) -> Option
     }
 }
 
-pub fn discover_usb(root: &Path) -> io::Result<Vec<UsbDevice>> {
-    Ok(discover_usb_report(root)?.devices)
-}
-
-pub fn discover_usb_report(root: &Path) -> io::Result<DiscoveryReport<UsbDevice>> {
+/// Scan `root` (normally [`crate::sysfs::USB`]); unreadable entries become warnings.
+pub fn discover(root: impl AsRef<Path>) -> io::Result<DiscoveryReport<UsbDevice>> {
+    let root = root.as_ref();
     let mut report = DiscoveryReport::default();
 
     for entry in fs::read_dir(root)? {
@@ -69,7 +67,7 @@ pub fn discover_usb_report(root: &Path) -> io::Result<DiscoveryReport<UsbDevice>
 
 #[cfg(test)]
 mod tests {
-    use super::{discover_usb, discover_usb_report};
+    use super::discover;
     use std::{fs, time::SystemTime};
 
     #[test]
@@ -91,8 +89,8 @@ mod tests {
         fs::write(incomplete.join("idVendor"), "\n").unwrap();
         fs::write(incomplete.join("idProduct"), "5678\n").unwrap();
 
-        let report = discover_usb_report(&root).unwrap();
-        let devices = discover_usb(&root).unwrap();
+        let report = discover(&root).unwrap();
+        let devices = report.devices.clone();
         fs::remove_dir_all(&root).unwrap();
 
         assert_eq!(devices.len(), 1);

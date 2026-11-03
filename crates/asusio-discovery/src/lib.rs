@@ -7,12 +7,22 @@ pub mod usb;
 use asusio_types::BoardInfo;
 use std::{fs, io, path::Path};
 
+/// Default Linux sysfs roots. Discovery functions accept any root so tests can use fixtures.
+pub mod sysfs {
+    pub const DMI: &str = "/sys/class/dmi/id";
+    pub const HWMON: &str = "/sys/class/hwmon";
+    pub const PCI: &str = "/sys/bus/pci/devices";
+    pub const USB: &str = "/sys/bus/usb/devices";
+    pub const HID: &str = "/sys/bus/hid/devices";
+    pub const I2C: &str = "/sys/bus/i2c/devices";
+}
+
 fn read_field(path: &Path) -> io::Result<String> {
     Ok(fs::read_to_string(path)?.trim().to_owned())
 }
 
 pub fn discover_board() -> io::Result<BoardInfo> {
-    let root = Path::new("/sys/class/dmi/id");
+    let root = Path::new(sysfs::DMI);
 
     let vendor = read_field(&root.join("board_vendor"))?;
     let model = read_field(&root.join("board_name"))?;

@@ -1,3 +1,4 @@
+use crate::hid_descriptor::{HidReportDescriptorInfo, parse_hid_report_descriptor};
 use asusio_types::{DiscoveryReport, DiscoveryWarning, HidDevice};
 use std::{fs, io, path::Path};
 
@@ -29,11 +30,9 @@ fn parse_hid_id(value: &str) -> Option<(String, String)> {
     Some((format!("{vendor:04x}"), format!("{product:04x}")))
 }
 
-pub fn discover_hid(root: &Path) -> io::Result<Vec<HidDevice>> {
-    Ok(discover_hid_report(root)?.devices)
-}
-
-pub fn discover_hid_report(root: &Path) -> io::Result<DiscoveryReport<HidDevice>> {
+/// Scan `root` (normally [`crate::sysfs::HID`]); unreadable entries become warnings.
+pub fn discover(root: impl AsRef<Path>) -> io::Result<DiscoveryReport<HidDevice>> {
+    let root = root.as_ref();
     let mut report = DiscoveryReport::default();
 
     for entry in fs::read_dir(root)? {
@@ -101,6 +100,37 @@ pub fn discover_hid_report(root: &Path) -> io::Result<DiscoveryReport<HidDevice>
     report.sort_warnings();
 
     Ok(report)
+}
+
+/// Look up one HID device by its sysfs ID, e.g. `0003:0B05:1CD2.0001`.
+pub fn find(root: impl AsRef<Path>, device_id: &str) -> io::Result<HidDevice> {
+    discover(root)?
+        .devices
+        .into_iter()
+        .find(|device| device.device_id == device_id)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "HID device ID not found"))
+}
+
+/// Raw report descriptor bytes from sysfs. This does not access hidraw.
+pub fn read_report_descriptor(root: impl AsRef<Path>, device_id: &str) -> io::Result<Vec<u8>> {
+    fs::read(root.as_ref().join(device_id).join("report_descriptor"))
+}
+
+/// Read and parse the report descriptor from sysfs. This does not access hidraw.
+pub fn report_descriptor(
+    root: impl AsRef<Path>,
+    device_id: &str,
+) -> io::Result<HidReportDescriptorInfo> {
+    parse_hid_report_descriptor(&read_report_descriptor(root, device_id)?)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+}
+
+/// `HID_PHYS` from the device's uevent: a stable physical USB interface path.
+pub fn physical_path(root: impl AsRef<Path>, device_id: &str) -> io::Result<String> {
+    let text = fs::read_to_string(root.as_ref().join(device_id).join("uevent"))?;
+    uevent_field(&text, "HID_PHYS")
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing HID physical identity"))
 }
 
 #[cfg(test)]
