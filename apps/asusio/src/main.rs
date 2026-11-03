@@ -1,3 +1,4 @@
+use asusio_core::detect_capabilities;
 use asusio_discovery::{
     discover_board, hid::discover_hid_report, hwmon::discover_hwmon_report,
     pci::discover_pci_report, usb::discover_usb_report,
@@ -38,6 +39,13 @@ enum Commands {
         /// Include HID devices
         #[arg(long)]
         hid: bool,
+    },
+
+    /// Display capabilities inferred from readable sensors and device IDs
+    Capabilities {
+        /// Print machine-readable JSON
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -188,6 +196,47 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             .map(|size| format!("{size} bytes"))
                             .unwrap_or_else(|| "Unavailable".to_owned())
                     );
+                }
+            }
+            print_warnings(&warnings);
+        }
+
+        Commands::Capabilities { json } => {
+            let hwmon = discover_hwmon_report(Path::new("/sys/class/hwmon"))?;
+            let usb = discover_usb_report(Path::new("/sys/bus/usb/devices"))?;
+            let hid = discover_hid_report(Path::new("/sys/bus/hid/devices"))?;
+            let registry = detect_capabilities(&hwmon.devices, &usb.devices, &hid.devices);
+
+            let mut warnings = hwmon.warnings;
+            warnings.extend(usb.warnings);
+            warnings.extend(hid.warnings);
+            warnings.sort_by(|a, b| a.path.cmp(&b.path).then_with(|| a.reason.cmp(&b.reason)));
+
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "schema_version": 1,
+                        "capabilities": registry.capabilities(),
+                        "warnings": warnings,
+                    }))?
+                );
+                return Ok(());
+            }
+
+            println!("Capabilities ({})", registry.capabilities().len());
+            for capability in registry.capabilities() {
+                println!(
+                    "  {} [{}]  support={:?} detection={:?} read={:?} write={:?}",
+                    capability.id,
+                    capability.device_id.as_deref().unwrap_or("system"),
+                    capability.support,
+                    capability.detection,
+                    capability.read_access,
+                    capability.write_access,
+                );
+                if let Some(detail) = &capability.detail {
+                    println!("    {detail}");
                 }
             }
             print_warnings(&warnings);

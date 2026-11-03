@@ -54,3 +54,18 @@ array containing HID IDs, name, driver, optional hidraw path, and report
 descriptor size. The `hid` key is absent unless `--hid` is specified.
 Warnings contain the sysfs `path` and a `reason`. In text mode they are
 printed to standard error.
+
+## Capability model
+
+`asusio-types::Capability` keeps compatibility (`support`), local evidence
+(`detection`), and OS-level read/write access separate. A detected capability
+can still be unsupported by a backend or inaccessible to the current user.
+OS-level write access does not authorize hardware writes; policy and backend
+verification are separate requirements. Capability `id` values are intended
+to be stable machine-readable keys.
+`asusio-core::CapabilityRegistry` stores and queries capabilities by ID and
+device ID. Run `asusio capabilities` or `asusio capabilities --json` to inspect
+the capabilities derived from readable hwmon sensors and matching USB/HID IDs.
+The JSON output contains `schema_version: 1`, `capabilities`, and `warnings`.
+Successful sensor reads verify read access only. USB/HID ID matches are
+candidates; they do not establish protocol or RGB control support.

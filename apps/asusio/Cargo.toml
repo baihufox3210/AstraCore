@@ -5,6 +5,7 @@ license.workspace = true
 version.workspace = true
 
 [dependencies]
+asusio-core = { version = "0.1.0", path = "../../crates/asusio-core" }
 asusio-discovery = { version = "0.1.0", path = "../../crates/asusio-discovery" }
 asusio-types = { version = "0.1.0", path = "../../crates/asusio-types" }
 clap = { version = "4.6.7", features = ["derive"] }
