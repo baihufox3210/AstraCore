@@ -177,7 +177,10 @@ impl CpuState {
         })
     }
 
-    /// Check that every policy offers the requested values.
+    /// Check that every policy offers the requested values before anything is written.
+    /// The EPP list depends on the governor (under `performance` the kernel lists only
+    /// `performance`), so it is checked here only for policies already on the target
+    /// governor; the others are checked again right after their governor switch.
     fn check_available(&self, settings: &Settings) -> io::Result<()> {
         for policy in &self.policies {
             let governor = settings.governor.as_str();
@@ -187,15 +190,21 @@ impl CpuState {
                     policy.policy
                 )));
             }
-            let epp = settings.epp.as_str();
-            if !policy.available_epp.iter().any(|e| e == epp) {
-                return Err(invalid_input(format!(
-                    "policy{} does not offer EPP {epp}",
-                    policy.policy
-                )));
+            if policy.governor == governor {
+                check_epp(policy.policy, &policy.available_epp, settings.epp)?;
             }
         }
         Ok(())
+    }
+}
+
+fn check_epp(policy: u32, available: &[String], epp: Epp) -> io::Result<()> {
+    if available.iter().any(|value| value == epp.as_str()) {
+        Ok(())
+    } else {
+        Err(invalid_input(format!(
+            "policy{policy} does not offer EPP {epp}"
+        )))
     }
 }
 
@@ -376,7 +385,10 @@ fn apply_changes(io: &impl Attrs, root: &Path, settings: &Settings) -> io::Resul
             &policy.path.join("scaling_governor"),
             settings.governor.as_str(),
         )?;
-        // Checked after the governor: switching it changes the effective EPP.
+        // After the governor: switching it changes the effective and available EPP.
+        let available = io.read(&policy.path.join("energy_performance_available_preferences"))?;
+        let available: Vec<_> = available.split_whitespace().map(str::to_owned).collect();
+        check_epp(policy.policy, &available, settings.epp)?;
         ensure(
             io,
             &policy.path.join("energy_performance_preference"),
@@ -490,6 +502,13 @@ mod tests {
 
     impl Attrs for Driver {
         fn read(&self, path: &Path) -> io::Result<String> {
+            // Observed on the 7500F: under the performance governor only `performance`
+            // is listed as available.
+            if path.ends_with("energy_performance_available_preferences")
+                && Sysfs.read(&path.with_file_name("scaling_governor"))? == "performance"
+            {
+                return Ok("performance".to_owned());
+            }
             Sysfs.read(path)
         }
 
@@ -632,11 +651,49 @@ mod tests {
             ]
         );
         driver.writes.borrow_mut().clear();
+        driver.writes.borrow_mut().clear();
         apply_with(&driver, &fixture.0, &SILENT).unwrap();
         assert!(
             driver.writes.borrow().is_empty(),
             "no-op when already applied"
         );
+    }
+
+    #[test]
+    fn leaves_the_performance_governor_despite_its_reduced_epp_list() {
+        let fixture = Fixture::new();
+        let driver = Driver::default();
+        apply_with(&driver, &fixture.0, &TURBO).unwrap();
+        let state = inspect_with(&driver, &fixture.0).unwrap();
+        assert_eq!(state.policies[0].available_epp, ["performance"]);
+        let state = apply_with(&driver, &fixture.0, &SILENT).unwrap();
+        assert_eq!(state.settings(), Some(SILENT));
+    }
+
+    #[test]
+    fn epp_missing_after_the_governor_switch_is_rolled_back() {
+        let fixture = Fixture::new();
+        let driver = Driver::default();
+        apply_with(&driver, &fixture.0, &TURBO).unwrap();
+        // Writes happen with the performance governor active; policy1's powersave list
+        // lacks `power`, which can only be seen after its governor switch.
+        fs::write(
+            fixture
+                .0
+                .join("cpufreq/policy1/energy_performance_available_preferences"),
+            "default performance",
+        )
+        .unwrap();
+        let error = apply_with(&driver, &fixture.0, &SILENT).unwrap_err();
+        assert!(
+            error.to_string().contains("does not offer EPP power"),
+            "{error}"
+        );
+        assert!(
+            error.to_string().contains("previous values restored"),
+            "{error}"
+        );
+        assert_eq!(inspect(&fixture.0).unwrap().settings(), Some(TURBO));
     }
 
     #[test]
