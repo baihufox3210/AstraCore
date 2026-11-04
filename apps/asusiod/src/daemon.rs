@@ -1,12 +1,18 @@
 //! Shared daemon state and lighting operations.
 use crate::signals;
 use asusio_core::{
+    cpu_profile::{self, Custom, FanPlan, Mode, Profile, cpu_pstate},
     lighting::{self, Config, Request},
     service::{
-        LightingState, ServiceConfig, State,
-        ipc::{FanStatus, LightingResult, RestoreEntry, Status, TargetResult},
+        LightingState, ProfileState, ServiceConfig, State,
+        ipc::{
+            CpuSummary, FanState, FanStatus, LightingResult, ProfileReport, ProfileResult,
+            PwmControl, RestoreEntry, Status, TargetResult, Telemetry,
+        },
     },
+    telemetry::{self, PowerSampler},
 };
+use asusio_discovery::sysfs;
 use asusio_policy::Policy;
 use std::{
     fs, io,
@@ -31,6 +37,12 @@ pub struct Daemon {
     state: Mutex<State>,
     restore: Mutex<Vec<RestoreEntry>>,
     pub fans: Mutex<Vec<FanStatus>>,
+    /// Selected fan curves with a generation counter the fan loop watches.
+    fan_plan: Mutex<(u64, FanPlan)>,
+    /// Serializes CPU profile writes.
+    cpu: Mutex<()>,
+    profile_error: Mutex<Option<String>>,
+    power: Mutex<PowerSampler>,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -95,7 +107,12 @@ impl Daemon {
             gid
         });
         let state = State::load(&config.state_file)?;
+        let fan_plan = FanPlan::resolve(None, &config.fan_presets, &config.fan_curves);
         Ok(Self {
+            fan_plan: Mutex::new((0, fan_plan)),
+            cpu: Mutex::new(()),
+            profile_error: Mutex::new(None),
+            power: Mutex::new(PowerSampler::new(Path::new(sysfs::POWERCAP))),
             policy: Policy::new(effective_uid(), client_gid, config.allow_active_sessions),
             client_gid,
             hardware: Mutex::new(()),
@@ -107,13 +124,170 @@ impl Daemon {
     }
 
     pub fn status(&self) -> Status {
+        // Guards in a struct literal live until the end of the statement, so the state
+        // is read once here instead of locking it twice inside the literal.
+        let (lighting_config, profile) = {
+            let state = lock(&self.state);
+            (
+                state.lighting_config.clone(),
+                state.profile.as_ref().map(|p| p.mode),
+            )
+        };
         Status {
             version: env!("CARGO_PKG_VERSION").to_owned(),
-            lighting_config: lock(&self.state).lighting_config.clone(),
+            lighting_config,
             state_file: self.config.state_file.clone(),
             restore: lock(&self.restore).clone(),
             fans: lock(&self.fans).clone(),
+            profile,
+            fan: Some(self.fan_plan().1),
+            profile_error: lock(&self.profile_error).clone(),
         }
+    }
+
+    /// The fan loop polls this; a new generation means the selection changed.
+    pub fn fan_plan(&self) -> (u64, FanPlan) {
+        lock(&self.fan_plan).clone()
+    }
+
+    fn resolve(&self, mode: Mode, custom: Option<&Custom>) -> io::Result<Profile> {
+        cpu_profile::resolve(
+            mode,
+            custom,
+            &self.config.fan_presets,
+            &self.config.fan_curves,
+        )
+    }
+
+    fn recorded_profile(&self) -> Option<ProfileState> {
+        lock(&self.state).profile.clone()
+    }
+
+    fn in_sync(&self, cpu: &CpuSummary) -> Option<bool> {
+        let recorded = self.recorded_profile()?;
+        let profile = self.resolve(recorded.mode, recorded.custom.as_ref()).ok()?;
+        Some(cpu.matches(&profile))
+    }
+
+    pub fn profiles(&self) -> ProfileReport {
+        let recorded = self.recorded_profile();
+        let custom = recorded.as_ref().and_then(|p| p.custom.clone());
+        let profiles = Mode::ALL
+            .into_iter()
+            .filter_map(|mode| self.resolve(mode, custom.as_ref()).ok())
+            .collect();
+        let cpu = CpuSummary::from(&cpu_pstate::inspect(Path::new(sysfs::CPU)));
+        ProfileReport {
+            active: recorded.map(|p| p.mode),
+            in_sync: self.in_sync(&cpu),
+            custom,
+            profiles,
+            fan_presets: self.config.fan_presets.keys().cloned().collect(),
+            cpu,
+            last_error: lock(&self.profile_error).clone(),
+        }
+    }
+
+    /// Apply the CPU settings, then switch fan curves and record the selection. A CPU
+    /// failure (already rolled back by the backend) changes nothing else.
+    fn apply_profile(
+        &self,
+        profile: &Profile,
+        custom: Option<Custom>,
+    ) -> io::Result<ProfileResult> {
+        let _cpu = lock(&self.cpu);
+        let applied = match cpu_pstate::apply(Path::new(sysfs::CPU), &profile.cpu) {
+            Ok(state) => state,
+            Err(error) => {
+                let message = format!("{}: {error}", profile.mode);
+                *lock(&self.profile_error) = Some(message.clone());
+                return Err(io::Error::new(error.kind(), message));
+            }
+        };
+        *lock(&self.profile_error) = None;
+        {
+            let mut plan = lock(&self.fan_plan);
+            if plan.1 != profile.fan {
+                *plan = (plan.0 + 1, profile.fan.clone());
+            }
+        }
+        let persist_error = {
+            let mut state = lock(&self.state);
+            let custom = custom.or_else(|| state.profile.as_ref().and_then(|p| p.custom.clone()));
+            state.profile = Some(ProfileState {
+                mode: profile.mode,
+                custom,
+            });
+            state.save(&self.config.state_file).err()
+        }
+        .map(|error| error.to_string());
+        Ok(ProfileResult {
+            executed: true,
+            profile: profile.clone(),
+            cpu: Some(CpuSummary::from(&Ok(applied))),
+            persist_error,
+        })
+    }
+
+    /// Preview, or with `execute` apply and record, a CPU profile.
+    pub fn set_profile(
+        &self,
+        mode: Mode,
+        custom: Option<Custom>,
+        execute: bool,
+    ) -> io::Result<ProfileResult> {
+        if custom.is_some() && mode != Mode::Custom {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "custom settings can only be given with the custom profile",
+            ));
+        }
+        let stored = self.recorded_profile().and_then(|p| p.custom);
+        let profile = self.resolve(mode, custom.as_ref().or(stored.as_ref()))?;
+        if !execute {
+            return Ok(ProfileResult {
+                executed: false,
+                profile,
+                cpu: None,
+                persist_error: None,
+            });
+        }
+        self.apply_profile(&profile, custom)
+    }
+
+    /// Boot restore of the recorded profile. Without one, the CPU is left untouched.
+    pub fn restore_profile_at_startup(&self) {
+        let Some(recorded) = self.recorded_profile() else {
+            eprintln!("profile: none recorded; CPU settings left unchanged");
+            return;
+        };
+        let result = self
+            .resolve(recorded.mode, recorded.custom.as_ref())
+            .and_then(|profile| self.apply_profile(&profile, None));
+        match result {
+            Ok(result) => eprintln!("profile: {} restored", result.profile.mode),
+            Err(error) => {
+                eprintln!("profile: restore failed: {error}");
+                *lock(&self.profile_error) = Some(error.to_string());
+            }
+        }
+    }
+
+    pub fn telemetry(&self) -> Telemetry {
+        let mut telemetry = telemetry::read(Some(&mut lock(&self.power)));
+        telemetry.mode = self.recorded_profile().map(|p| p.mode);
+        telemetry.in_sync = self.in_sync(&telemetry.cpu);
+        telemetry.fan = Some(lock(&self.fan_plan).1.clone());
+        let fans = lock(&self.fans);
+        for pwm in &mut telemetry.pwm {
+            let driven = fans.iter().any(|fan| {
+                fan.channel == pwm.channel && matches!(fan.state, FanState::Active { .. })
+            });
+            if driven {
+                pwm.control = PwmControl::Curve;
+            }
+        }
+        telemetry
     }
 
     /// Plan, and with `execute` apply and record, one lighting request from `caller`.

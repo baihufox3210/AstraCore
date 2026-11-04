@@ -1,5 +1,6 @@
 //! Newline-delimited JSON protocol between clients (CLI, GUI) and `asusiod`.
 //! One request and one response per connection.
+use crate::cpu_profile::{Custom, FanPlan, Mode, Profile};
 use asusio_policy::Operation;
 use asusio_types::Rgb;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -31,6 +32,19 @@ pub enum Request {
     },
     /// Reapply the recorded lighting state now.
     RestoreLighting,
+    /// Built-in and custom CPU profiles, the recorded selection and the CPU state.
+    GetProfiles,
+    /// Preview (or, with `execute`, apply and record) a CPU profile. For `custom`, the
+    /// given settings replace the stored custom profile; when omitted the stored one is
+    /// used. Fan presets are selected by name only; curves cannot be sent.
+    SetProfile {
+        mode: Mode,
+        #[serde(default)]
+        custom: Option<Custom>,
+        execute: bool,
+    },
+    /// Live readings: CPU state, Tctl, fans, package power and the active profile.
+    Telemetry,
 }
 
 impl Request {
@@ -40,6 +54,10 @@ impl Request {
             Self::SetLighting { execute: false, .. } => Operation::PreviewLighting,
             Self::SetLighting { execute: true, .. } => Operation::SetLighting,
             Self::RestoreLighting => Operation::RestoreLighting,
+            Self::GetProfiles => Operation::ReadStatus,
+            Self::SetProfile { execute: false, .. } => Operation::PreviewProfile,
+            Self::SetProfile { execute: true, .. } => Operation::SetProfile,
+            Self::Telemetry => Operation::ReadTelemetry,
         }
     }
 }
@@ -116,7 +134,106 @@ pub struct Status {
     pub lighting_config: Option<PathBuf>,
     pub state_file: PathBuf,
     pub restore: Vec<RestoreEntry>,
+    /// Curves currently driven by the daemon; channels not listed are under firmware control.
     pub fans: Vec<FanStatus>,
+    /// Recorded CPU profile, if any.
+    #[serde(default)]
+    pub profile: Option<Mode>,
+    /// Which fan curves are selected (by the profile, or the defaults).
+    #[serde(default)]
+    pub fan: Option<FanPlan>,
+    /// Last profile application error (boot restore or request).
+    #[serde(default)]
+    pub profile_error: Option<String>,
+}
+
+/// CPU frequency state reduced to what a status display needs. `None` values mean
+/// unknown, or different between CPUs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CpuSummary {
+    pub supported: bool,
+    /// Why profiles cannot be applied, when unsupported.
+    pub reason: Option<String>,
+    pub governor: Option<String>,
+    pub epp: Option<String>,
+    pub boost: Option<bool>,
+}
+
+impl CpuSummary {
+    /// Whether the observed state equals `profile`'s CPU settings.
+    pub fn matches(&self, profile: &Profile) -> bool {
+        self.governor.as_deref() == Some(profile.cpu.governor.as_str())
+            && self.epp.as_deref() == Some(profile.cpu.epp.as_str())
+            && self.boost == Some(profile.cpu.boost)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FanReading {
+    pub channel: u8,
+    pub rpm: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PwmControl {
+    /// Driven by an asusiod fan curve.
+    Curve,
+    /// Manual duty set outside the daemon.
+    Manual,
+    /// Firmware automatic control.
+    Firmware,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PwmReading {
+    pub channel: u8,
+    pub percent: u8,
+    /// Raw `pwmN_enable`.
+    pub enable: u8,
+    pub control: PwmControl,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Telemetry {
+    pub mode: Option<Mode>,
+    /// Whether the CPU still matches the recorded profile (`None` without one).
+    pub in_sync: Option<bool>,
+    pub cpu: CpuSummary,
+    pub tctl_celsius: Option<f64>,
+    /// Coarse package power average; only available through the root daemon.
+    pub package_watts: Option<f64>,
+    /// Active sched_ext scheduler, if one is loaded.
+    pub scheduler: Option<String>,
+    pub fans: Vec<FanReading>,
+    pub pwm: Vec<PwmReading>,
+    pub fan: Option<FanPlan>,
+    /// Readings that could not be taken.
+    pub errors: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProfileReport {
+    pub active: Option<Mode>,
+    pub in_sync: Option<bool>,
+    /// Stored custom settings, if defined.
+    pub custom: Option<Custom>,
+    /// Resolved built-in profiles, plus custom when it is defined and valid.
+    pub profiles: Vec<Profile>,
+    /// Names of the fan presets in the daemon configuration.
+    pub fan_presets: Vec<String>,
+    pub cpu: CpuSummary,
+    pub last_error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProfileResult {
+    pub executed: bool,
+    pub profile: Profile,
+    /// State after applying; `None` for previews.
+    pub cpu: Option<CpuSummary>,
+    /// Set when the profile was applied but could not be recorded for boot restore.
+    pub persist_error: Option<String>,
 }
 
 fn read_line(reader: impl Read, limit: u64) -> io::Result<Vec<u8>> {
@@ -211,6 +328,29 @@ mod tests {
             "no newline"
         );
         assert!(read_request(br#"{"method":"format_disk"}\n"#.as_slice()).is_err());
+    }
+
+    fn line(json: &str) -> Vec<u8> {
+        format!("{json}\n").into_bytes()
+    }
+
+    #[test]
+    fn profile_requests_select_presets_by_name_only() {
+        let custom = r#"{"method":"set_profile","mode":"custom","custom":{"governor":"powersave","epp":"power","boost":false,"fan_preset":"silent"},"execute":true}"#;
+        let set = read_request(line(custom).as_slice()).unwrap();
+        assert_eq!(set.operation(), Operation::SetProfile);
+        let preview = r#"{"method":"set_profile","mode":"turbo","execute":false}"#;
+        let preview = read_request(line(preview).as_slice()).unwrap();
+        assert_eq!(preview.operation(), Operation::PreviewProfile);
+        assert_eq!(Request::Telemetry.operation(), Operation::ReadTelemetry);
+        assert_eq!(Request::GetProfiles.operation(), Operation::ReadStatus);
+        let with_curve = r#"{"method":"set_profile","mode":"custom","custom":{"governor":"powersave","epp":"power","boost":false,"fan_curves":[]},"execute":true}"#;
+        assert!(
+            read_request(line(with_curve).as_slice()).is_err(),
+            "curves cannot be sent"
+        );
+        let unknown = r#"{"method":"set_profile","mode":"overclock","execute":true}"#;
+        assert!(read_request(line(unknown).as_slice()).is_err());
     }
 
     #[test]

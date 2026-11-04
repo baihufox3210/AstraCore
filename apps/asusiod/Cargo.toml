@@ -6,6 +6,7 @@ version.workspace = true
 
 [dependencies]
 asusio-core = { path = "../../crates/asusio-core" }
+asusio-discovery = { path = "../../crates/asusio-discovery" }
 asusio-policy = { path = "../../crates/asusio-policy" }
 clap = { version = "4.6.7", features = ["derive"] }
 libc = "0.2"

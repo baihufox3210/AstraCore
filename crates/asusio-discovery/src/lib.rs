@@ -15,6 +15,9 @@ pub mod sysfs {
     pub const USB: &str = "/sys/bus/usb/devices";
     pub const HID: &str = "/sys/bus/hid/devices";
     pub const I2C: &str = "/sys/bus/i2c/devices";
+    pub const CPU: &str = "/sys/devices/system/cpu";
+    pub const POWERCAP: &str = "/sys/class/powercap";
+    pub const SCHED_EXT: &str = "/sys/kernel/sched_ext";
 }
 
 fn read_field(path: &Path) -> io::Result<String> {

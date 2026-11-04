@@ -4,6 +4,7 @@
 //! HID backends take a discovered [`asusio_types::HidDevice`] plus its sysfs root
 //! (normally [`asusio_discovery::sysfs::HID`]).
 pub mod aura_hid;
+pub mod cpu_pstate;
 pub mod ene_smbus;
 pub mod fan_hwmon;
 pub mod lianli_ipc;

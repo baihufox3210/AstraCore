@@ -1,5 +1,5 @@
-//! asusiod: restores recorded lighting at boot, runs fan curves, and serves lighting
-//! requests to authorized local users over a Unix socket.
+//! asusiod: restores recorded lighting and CPU profile at boot, runs fan curves, and
+//! serves lighting and profile requests to authorized local users over a Unix socket.
 mod daemon;
 mod fans;
 mod server;
@@ -33,7 +33,7 @@ fn main() -> ExitCode {
 fn run(args: Args) -> io::Result<()> {
     let config = ServiceConfig::load(&args.config)?;
     if args.release_fans {
-        return fans::release_all(&config.fan_curves);
+        return fans::release_all(&config.fan_channels());
     }
     // A panic in any thread must end the process so ExecStopPost releases the fans.
     let default_hook = std::panic::take_hook();
@@ -45,11 +45,13 @@ fn run(args: Args) -> io::Result<()> {
 
     let daemon = Arc::new(daemon::Daemon::new(config)?);
     eprintln!("asusiod {} started", env!("CARGO_PKG_VERSION"));
+    // Before the fan loop starts, so it begins with the recorded profile's curves.
+    daemon.restore_profile_at_startup();
     let restore = daemon.config.restore_lighting.then(|| {
         let daemon = daemon.clone();
         thread::spawn(move || daemon.restore_at_startup())
     });
-    let fans = (!daemon.config.fan_curves.is_empty()).then(|| {
+    let fans = (!daemon.config.fan_channels().is_empty()).then(|| {
         let daemon = daemon.clone();
         thread::spawn(move || fans::run(&daemon))
     });

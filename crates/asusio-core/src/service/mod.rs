@@ -1,7 +1,12 @@
 //! Configuration and persisted state of the `asusiod` system service.
 pub mod ipc;
 
-use crate::{fan_curve::FanCurve, lighting::Request, persist};
+use crate::{
+    cpu_profile::{self, Custom, FanPresets, Mode},
+    fan_curve::FanCurve,
+    lighting::Request,
+    persist,
+};
 use asusio_types::Rgb;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -55,8 +60,14 @@ pub struct ServiceConfig {
     /// Reapply recorded lighting when the daemon starts (at boot).
     #[serde(default = "default_true")]
     pub restore_lighting: bool,
+    /// Default curves, used when no profile is recorded or the profile names no
+    /// (defined) preset. Empty means firmware control.
     #[serde(default)]
     pub fan_curves: Vec<FanCurve>,
+    /// Named curve sets that CPU profiles may select, e.g. `silent`, `performance`,
+    /// `turbo`. Clients can only choose a name; curves are defined here only.
+    #[serde(default)]
+    pub fan_presets: FanPresets,
     #[serde(default = "default_interval")]
     pub fan_interval_ms: u64,
 }
@@ -75,6 +86,7 @@ impl Default for ServiceConfig {
             state_file: default_state(),
             restore_lighting: true,
             fan_curves: Vec::new(),
+            fan_presets: FanPresets::new(),
             fan_interval_ms: default_interval(),
         }
     }
@@ -109,21 +121,58 @@ impl ServiceConfig {
         if !(500..=10_000).contains(&self.fan_interval_ms) {
             return Err(invalid("fan_interval_ms must be 500..10000"));
         }
-        let mut channels = Vec::new();
-        for curve in &self.fan_curves {
-            curve
-                .validate()
-                .map_err(|error| invalid(format!("pwm{}: {error}", curve.channel)))?;
-            if channels.contains(&curve.channel) {
+        validate_curves("fan_curves", &self.fan_curves)?;
+        for (name, curves) in &self.fan_presets {
+            cpu_profile::validate_preset_name(name).map_err(|error| invalid(error.to_string()))?;
+            if curves.is_empty() {
                 return Err(invalid(format!(
-                    "pwm{} has more than one fan curve",
-                    curve.channel
+                    "fan preset {name:?} has no curves; omit it to keep firmware control"
                 )));
             }
-            channels.push(curve.channel);
+            validate_curves(&format!("fan preset {name:?}"), curves)?;
         }
         Ok(())
     }
+
+    /// Every channel any default or preset curve may drive; all are released on stop.
+    pub fn fan_channels(&self) -> Vec<u8> {
+        let mut channels: Vec<u8> = self
+            .fan_curves
+            .iter()
+            .chain(self.fan_presets.values().flatten())
+            .map(|curve| curve.channel)
+            .collect();
+        channels.sort_unstable();
+        channels.dedup();
+        channels
+    }
+}
+
+fn validate_curves(what: &str, curves: &[FanCurve]) -> io::Result<()> {
+    let mut channels = Vec::new();
+    for curve in curves {
+        curve
+            .validate()
+            .map_err(|error| invalid(format!("{what}: pwm{}: {error}", curve.channel)))?;
+        if channels.contains(&curve.channel) {
+            return Err(invalid(format!(
+                "{what}: pwm{} has more than one fan curve",
+                curve.channel
+            )));
+        }
+        channels.push(curve.channel);
+    }
+    Ok(())
+}
+
+/// Recorded CPU profile selection. The custom settings are kept while a built-in mode
+/// is active, so switching back restores them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProfileState {
+    pub mode: Mode,
+    #[serde(default)]
+    pub custom: Option<Custom>,
 }
 
 /// Last requested lighting for one alias. Calibration is reapplied at restore time,
@@ -168,6 +217,9 @@ pub struct State {
     pub config_owner: Option<u32>,
     #[serde(default)]
     pub lighting: BTreeMap<String, LightingState>,
+    /// CPU profile to reapply at boot.
+    #[serde(default)]
+    pub profile: Option<ProfileState>,
 }
 
 impl State {
@@ -223,8 +275,32 @@ mod tests {
         }))
         .unwrap();
         let mut duplicate = config.clone();
-        duplicate.fan_curves = vec![curve.clone(), curve];
+        duplicate.fan_curves = vec![curve.clone(), curve.clone()];
         assert!(duplicate.validate().is_err());
+
+        let mut presets = config.clone();
+        presets.fan_curves = vec![curve.clone()];
+        let mut quiet = curve.clone();
+        quiet.channel = 3;
+        presets
+            .fan_presets
+            .insert("silent".into(), vec![quiet.clone()]);
+        presets.validate().unwrap();
+        assert_eq!(presets.fan_channels(), [2, 3]);
+        presets
+            .fan_presets
+            .insert("Bad Name".into(), vec![quiet.clone()]);
+        assert!(presets.validate().is_err());
+        presets.fan_presets.remove("Bad Name");
+        presets.fan_presets.insert("empty".into(), Vec::new());
+        assert!(presets.validate().is_err());
+        presets.fan_presets.remove("empty");
+        quiet.points[1].percent = 90;
+        presets.fan_presets.insert("unsafe".into(), vec![quiet]);
+        assert!(
+            presets.validate().is_err(),
+            "preset curves must end at 100%"
+        );
     }
 
     #[test]
@@ -250,6 +326,13 @@ mod tests {
         let request = loaded.lighting["gpu"].request("gpu");
         assert_eq!((request.target(), request.rgb()), ("gpu", [255; 3]));
         assert_eq!(LightingState::from(&request), loaded.lighting["gpu"]);
+        assert_eq!(loaded.profile, None, "older state files have no profile");
+        state.profile = Some(ProfileState {
+            mode: Mode::Silent,
+            custom: Some(Custom::default()),
+        });
+        state.save(&path).unwrap();
+        assert_eq!(State::load(&path).unwrap().profile, state.profile);
         fs::remove_dir_all(directory).unwrap();
     }
 }

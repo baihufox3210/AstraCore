@@ -1,6 +1,7 @@
 //! Command-line schema. Colors, addresses and payloads are validated while parsing.
 use crate::output::parse;
 use asusio_backends::aura_hid;
+use asusio_core::cpu_profile::{Epp, Governor, Mode};
 use asusio_types::Rgb;
 use clap::{Args, Parser, Subcommand};
 use std::path::PathBuf;
@@ -67,6 +68,14 @@ pub enum Commands {
         socket: PathBuf,
         #[command(subcommand)]
         action: DaemonAction,
+    },
+
+    /// CPU performance profiles (governor, EPP, boost, fan preset) through asusiod
+    Profile {
+        #[arg(long, global = true, default_value = asusio_core::service::DEFAULT_SOCKET)]
+        socket: PathBuf,
+        #[command(subcommand)]
+        action: ProfileAction,
     },
 
     /// Control lighting through native hardware backends
@@ -150,6 +159,45 @@ pub struct SetArgs {
     /// Write hardware directly even when asusiod is running (not recorded for boot)
     #[arg(long)]
     pub direct: bool,
+}
+
+#[derive(Subcommand)]
+pub enum ProfileAction {
+    /// List built-in and custom profiles with their fan presets
+    List {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show live CPU state, Tctl, fans and package power
+    Status {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Preview or apply a profile; applied profiles are restored at boot
+    Set(ProfileSetArgs),
+}
+
+#[derive(Args)]
+pub struct ProfileSetArgs {
+    /// silent, balanced, performance, turbo or custom
+    #[arg(value_parser = parse::from_str::<Mode>)]
+    pub mode: Mode,
+    /// Custom only: performance or powersave
+    #[arg(long, value_parser = parse::from_str::<Governor>)]
+    pub governor: Option<Governor>,
+    /// Custom only: default, performance, balance_performance, balance_power or power
+    #[arg(long, value_parser = parse::from_str::<Epp>)]
+    pub epp: Option<Epp>,
+    /// Custom only: on or off
+    #[arg(long, value_parser = parse::on_off)]
+    pub boost: Option<bool>,
+    /// Custom only: a fan preset from /etc/asusio/asusiod.json, or `default`
+    #[arg(long)]
+    pub fan_preset: Option<String>,
+    #[arg(long)]
+    pub execute: bool,
+    #[arg(long)]
+    pub json: bool,
 }
 
 /// Requests to the asusiod system service; no sudo needed for members of its group.

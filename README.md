@@ -313,6 +313,72 @@ is introduced. Changing ports, hardware, firmware or topology may require an
 explicit configuration update. A moved DIMM address with the same firmware and
 LED count cannot be distinguished by this protocol alone.
 
+## CPU performance profiles
+
+On `amd-pstate-epp` in active mode (tested: Ryzen 5 7500F, kernel 7.2), asusiod can
+switch the governor, energy-performance preference (EPP) and boost of every online
+CPU, plus an optional fan-curve preset:
+
+| Profile | governor | EPP | boost | fans |
+|---|---|---|---|---|
+| `silent` | `powersave` | `power` | off | preset `silent`, if defined |
+| `balanced` | `powersave` | `balance_performance` | on | default curves |
+| `performance` | `powersave` | `performance` | on | preset `performance`, if defined |
+| `turbo` | `performance` | `performance` | on | preset `turbo`, if defined |
+| `custom` | any allowed | any allowed | on/off | any defined preset, or default |
+
+```bash
+asusio profile list                    # profiles, recorded selection, fan presets
+asusio profile status                  # Tctl, fan RPM, PWM state, governor/EPP/boost
+asusio profile set silent              # preview
+asusio profile set silent --execute    # apply through asusiod; restored at boot
+asusio profile set custom --epp balance_power --boost off --fan-preset silent --execute
+```
+
+All profile commands accept `--json`. `set` always goes through asusiod; `status`
+falls back to local read-only readings (without profile and power) when the daemon
+is not running. Custom flags are merged over the stored custom profile; switching to
+a built-in profile keeps the custom settings for later.
+
+**Safety.** Only `performance`/`powersave` and the EPP names `default`,
+`performance`, `balance_performance`, `balance_power`, `power` are accepted, and each
+must appear in every policy's `*_available_*` list. The kernel's `custom` EPP entry
+and raw numbers are not exposed. The performance governor only permits EPP
+`performance` (the driver returns `EBUSY` otherwise), so other combinations are
+rejected before writing. Writes go boost, then per policy governor then EPP; each is
+read back. On any failure the observed previous values are restored (governor before
+EPP, because a governor switch changes the effective EPP) and the error reports
+whether the restore succeeded. Other cpufreq drivers or `amd_pstate` modes are
+reported as unsupported; nothing is written. Without a recorded profile, the daemon
+leaves CPU settings untouched at boot. A failed CPU write leaves fans and the
+recorded profile unchanged.
+
+**Fan presets** are named curve sets in `/etc/asusio/asusiod.json`, validated like
+`fan_curves` (30% minimum, ending at 100%). Clients can only select a name; curves
+cannot be sent over the socket. A profile whose preset is not defined uses the
+default `fan_curves`, which are empty by default, so fans stay under firmware
+control; `profile list` and the status `fan` object say so explicitly (`firmware:
+true` and a `note`). Switching presets first returns every running channel to
+firmware, then starts the new set. On stop or crash, `--release-fans` releases every
+channel of the default curves and all presets.
+
+```json
+"fan_presets": {
+  "silent": [{"channel": 2, "sensor": {"chip": "k10temp", "label": "Tctl"},
+              "points": [{"celsius": 50, "percent": 30}, {"celsius": 85, "percent": 100}]}]
+}
+```
+
+**Telemetry** (`profile status --json`, IPC `telemetry`) contains `mode`, `in_sync`
+(false when the CPU was changed outside asusio), `cpu` (`supported`, `reason`,
+`governor`, `epp`, `boost`; `null` means mixed or unknown), `tctl_celsius`, `fans`
+(`channel`, `rpm`), `pwm` (`channel`, `percent`, raw `enable`, `control`: `curve`,
+`manual` or `firmware`), `fan`, `scheduler` (loaded sched_ext scheduler, e.g.
+`lavd_...`), `package_watts` and `errors`. Package power comes from the root-only
+powercap `package-0` energy counter, so it is only available through the daemon; it
+is averaged over at least one second and rounded to 0.1 W. The fan tachometer
+number still does not establish the PWM-to-header mapping.
+
 ## System service: boot restore and fan curves
 
 `asusiod` is a root system service. It reapplies your last lighting at boot,
@@ -347,7 +413,7 @@ progress, and `asusio daemon restore` reapplies the recorded lighting now.
 `/etc/asusio/asusiod.json` is optional; a missing file means defaults:
 
 ```json
-{"allow_active_sessions": true, "client_group": "asusio", "restore_lighting": true, "fan_curves": []}
+{"allow_active_sessions": true, "client_group": "asusio", "restore_lighting": true, "fan_curves": [], "fan_presets": {}}
 ```
 
 **Fan curves** are configured only in the root-owned `/etc/asusio/asusiod.json`
@@ -378,7 +444,10 @@ users with an active local logind session (like udev `uaccess`) are allowed. On
 a shared machine, set `"allow_active_sessions": false`; the socket then becomes
 `0660 root:asusio`, and only group members are allowed. Previews and status do
 not write hardware. The IPC protocol (`asusio_core::service::ipc`) is
-newline-delimited JSON with one request per connection.
+newline-delimited JSON with one request per connection. Methods: `status`,
+`set_lighting`, `restore_lighting`, `get_profiles`, `set_profile` and `telemetry`.
+Setting a profile (`set_profile` with `execute`) is a hardware write and is
+authorized like lighting writes.
 
 ## Library architecture and integration
 
@@ -389,7 +458,7 @@ lighting orchestration; applications own argument parsing and presentation.
 | Module | Responsibility |
 |---|---|
 | `apps/asusio/src/cli.rs` | Clap command schema; colors, addresses and payloads are parsed here |
-| `apps/asusio/src/commands/` | Presentation per area: `system`, `fans`, `lighting` (named), `diagnostics` (raw) |
+| `apps/asusio/src/commands/` | Presentation per area: `system`, `fans`, `profile`, `lighting` (named), `diagnostics` (raw) |
 | `apps/asusio/src/output.rs` | Shared JSON envelope, warnings, hex formatting and value parsers |
 | `asusio_core::lighting` | `Store`, `Request`, `plan`/`execute`, `discover_interfaces`, color helpers |
 | `asusio_core::lighting::config` | Configuration schema, host validation, atomic storage |
@@ -399,6 +468,9 @@ lighting orchestration; applications own argument parsing and presentation.
 | `asusio-types` | Shared data: `Rgb`, `UsbId`, device records, `DiscoveryReport`, `Capability` |
 | `asusio_core::service` | Daemon configuration, recorded state and IPC protocol (`ipc::call`) |
 | `asusio_core::fan_curve` | Curve validation, interpolation/hysteresis controller, hwmon/nct6799 adapters |
+| `asusio_core::cpu_profile` | Built-in and custom CPU profiles, fan-preset resolution |
+| `asusio_core::telemetry` | Read-only live readings (CPU, Tctl, fans, package power, sched_ext) |
+| `asusio_backends::cpu_pstate` | Verified amd-pstate-epp governor/EPP/boost writes with rollback |
 | `asusio-hal` | `TemperatureSensor` / `PwmOutput` traits used by control loops |
 | `asusio-policy` | Per-request authorization of daemon clients |
 | `apps/asusiod` | System service: boot restore, fan-curve loop, socket server |

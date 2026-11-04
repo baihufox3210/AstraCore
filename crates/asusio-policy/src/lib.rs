@@ -24,11 +24,20 @@ pub enum Operation {
     SetLighting,
     /// Reapply the recorded lighting state.
     RestoreLighting,
+    /// Read live CPU, temperature, fan and power readings.
+    ReadTelemetry,
+    /// Resolve a CPU profile without writing hardware.
+    PreviewProfile,
+    /// Apply a CPU profile (governor, EPP, boost, fan preset) and record it for boot.
+    SetProfile,
 }
 
 impl Operation {
     pub fn writes_hardware(self) -> bool {
-        matches!(self, Self::SetLighting | Self::RestoreLighting)
+        matches!(
+            self,
+            Self::SetLighting | Self::RestoreLighting | Self::SetProfile
+        )
     }
 
     fn describe(self) -> &'static str {
@@ -37,6 +46,9 @@ impl Operation {
             Self::PreviewLighting => "preview lighting",
             Self::SetLighting => "set lighting",
             Self::RestoreLighting => "restore lighting",
+            Self::ReadTelemetry => "read live telemetry",
+            Self::PreviewProfile => "preview a CPU profile",
+            Self::SetProfile => "set the CPU profile",
         }
     }
 }
@@ -62,7 +74,7 @@ impl std::error::Error for Denied {}
 
 /// Root and the daemon's own user may do everything. Members of the client group, and,
 /// when enabled, users with an active local session (like udev `uaccess`), may read
-/// status and control lighting. Everyone else is denied.
+/// status and control lighting and CPU profiles. Everyone else is denied.
 #[derive(Debug, Clone)]
 pub struct Policy {
     owner_uid: u32,
@@ -150,6 +162,13 @@ mod tests {
         assert!(denied.to_string().contains("uid 1001"));
         assert!(Operation::SetLighting.writes_hardware());
         assert!(!Operation::PreviewLighting.writes_hardware());
+        assert!(Operation::SetProfile.writes_hardware());
+        assert!(!Operation::PreviewProfile.writes_hardware());
+        assert!(!Operation::ReadTelemetry.writes_hardware());
+        let denied = policy
+            .authorize(&caller(1001, &[1001]), Operation::SetProfile)
+            .unwrap_err();
+        assert!(denied.to_string().contains("set the CPU profile"));
     }
 
     #[test]

@@ -131,6 +131,7 @@ name = "asusiod"
 version = "0.1.0"
 dependencies = [
  "asusio-core",
+ "asusio-discovery",
  "asusio-policy",
  "clap",
  "libc",

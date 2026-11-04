@@ -42,6 +42,21 @@ fn decode_hex(value: &str) -> Option<Vec<u8>> {
 pub mod parse {
     use super::*;
 
+    /// Any whitelisted name with a `FromStr` implementation, e.g. a profile mode.
+    pub fn from_str<T: std::str::FromStr<Err = std::io::Error>>(value: &str) -> Result<T, String> {
+        value
+            .parse()
+            .map_err(|error: std::io::Error| error.to_string())
+    }
+
+    pub fn on_off(value: &str) -> Result<bool, String> {
+        match value {
+            "on" => Ok(true),
+            "off" => Ok(false),
+            _ => Err("expected on or off".to_owned()),
+        }
+    }
+
     pub fn rgb(value: &str) -> Result<Rgb, String> {
         asusio_core::lighting::parse_hex(value).map_err(|error| error.to_string())
     }
@@ -101,5 +116,8 @@ mod tests {
         assert_eq!(parse::hex_u8("0x67").unwrap(), 0x67);
         assert_eq!(parse::hex_u8("70").unwrap(), 0x70);
         assert!(parse::hex_u8("100").is_err());
+        assert_eq!(parse::on_off("off"), Ok(false));
+        assert!(parse::on_off("1").is_err());
+        assert!(parse::from_str::<asusio_core::cpu_profile::Mode>("overclock").is_err());
     }
 }
