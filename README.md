@@ -313,6 +313,47 @@ is introduced. Changing ports, hardware, firmware or topology may require an
 explicit configuration update. A moved DIMM address with the same firmware and
 LED count cannot be distinguished by this protocol alone.
 
+### Sync and individual lighting modes
+
+asusiod keeps two independent lighting settings. **Individual** mode (the default,
+and the behavior of `lighting set`) gives each target its own color. **Sync** mode
+applies one color, brightness and effect to every configured target. Switching never
+overwrites the other mode's settings, and boot restore uses the current mode.
+
+```bash
+asusio lighting sync 80C0FF --brightness 70                  # preview
+asusio lighting sync 80C0FF --brightness 70 --execute        # every target; Sync mode
+asusio lighting mode individual --execute                    # back to per-target colors
+asusio lighting set gpu FF0000 --execute                     # one target; individual mode
+asusio lighting status [--json]                              # per-target state
+```
+
+`sync`, `mode` and `status` need asusiod. Per-target calibration still applies in
+Sync mode unless `--uncalibrated` is given. When individual mode is entered from
+Sync, targets that have no individual setting yet keep the Sync setting as their
+individual one, so nothing changes visibly and every target is restored at boot.
+Existing individual settings are never overwritten. Individual settings belong to
+one `lighting.json`; using another configuration drops them, Sync settings stay.
+
+Each target is planned separately: a target that cannot be resolved (for example the
+screen before lianli-daemon starts) is reported with its error, and the others are
+still applied. Every target is resolved before the first write.
+
+`--effect` selects a controller built-in effect; only `static` exists so far.
+Effects are added per controller after protocol research, and stay marked
+`experimental` until their color change is confirmed on the hardware.
+
+`lighting status --json` (IPC `get_lighting`) returns `mode`, `sync`,
+`lighting_config`, `recorded` (whether asusiod restores this configuration) and
+`targets`. Each target has `alias`, `kind` (`board`, `argb`, `keyboard`, `graphics`,
+`memory`, `screen` or `other`), `backend`, `white_balance`, `effects` (`effect`,
+`experimental`), `individual`, `applied` (what the current mode shows), `availability`
+(`state`: `available`, `not_ready` or `unavailable`, with a `reason`) and
+`last_error`. Readiness only checks sysfs bindings and, for the screen, that the
+lianli-daemon socket exists; results are cached for 10 seconds and refreshed after
+each write. ENE targets are classified by firmware: `AUMA0-E6K5-0107` as graphics,
+`AUDA0-*` and `DIMM_LED-*` as memory, matching the local identification above.
+
 ## CPU performance profiles
 
 On `amd-pstate-epp` in active mode (tested: Ryzen 5 7500F, kernel 7.2), asusiod can
@@ -448,7 +489,8 @@ a shared machine, set `"allow_active_sessions": false`; the socket then becomes
 `0660 root:asusio`, and only group members are allowed. Previews and status do
 not write hardware. The IPC protocol (`asusio_core::service::ipc`) is
 newline-delimited JSON with one request per connection. Methods: `status`,
-`set_lighting`, `restore_lighting`, `get_profiles`, `set_profile` and `telemetry`.
+`set_lighting`, `set_sync`, `set_lighting_mode`, `get_lighting`, `restore_lighting`,
+`get_profiles`, `set_profile` and `telemetry`.
 Setting a profile (`set_profile` with `execute`) is a hardware write and is
 authorized like lighting writes.
 
@@ -465,6 +507,7 @@ lighting orchestration; applications own argument parsing and presentation.
 | `apps/asusio/src/output.rs` | Shared JSON envelope, warnings, hex formatting and value parsers |
 | `asusio_core::lighting` | `Store`, `Request`, `plan`/`execute`, `discover_interfaces`, color helpers |
 | `asusio_core::lighting::config` | Configuration schema, host validation, atomic storage |
+| `asusio_core::lighting::info` | Target kind, supported effects and readiness for front ends |
 | `lighting::runtime` (internal) | Resolve native device identities and dispatch backends |
 | `asusio-backends` | Device protocols and OS transport; each exposes `DEVICE` (USB ID) and `inspect` |
 | `asusio-discovery` | Read-only sysfs scans: `hid::discover`, `usb::discover`, …; default roots in `sysfs` |
@@ -476,7 +519,7 @@ lighting orchestration; applications own argument parsing and presentation.
 | `asusio_backends::cpu_pstate` | Verified amd-pstate-epp governor/EPP/boost writes with rollback |
 | `asusio-hal` | `TemperatureSensor` / `PwmOutput` traits used by control loops |
 | `asusio-policy` | Per-request authorization of daemon clients |
-| `apps/asusiod` | System service: boot restore, fan-curve loop, socket server |
+| `apps/asusiod` | System service: `daemon` (state), `lighting`, `profile`, `fans`, `server` |
 | `apps/asusio-helper` | Previewable installer for the unit, configuration and module loading |
 
 A Rust application can use the same calibration and identity validation without

@@ -1,25 +1,33 @@
 //! Named lighting control through the reusable core API.
 use crate::{
-    cli::{ManagedAction, SetArgs},
+    cli::{LightArgs, ManagedAction},
     output::CliResult,
 };
 use asusio_core::{
     lighting::{self, Config, Request, Store, hex},
-    service::{DEFAULT_SOCKET, ipc},
+    service::{DEFAULT_SOCKET, LightingState, ipc},
 };
 use asusio_types::Rgb;
 
-impl SetArgs {
-    pub fn request(&self) -> Request<'_> {
-        Request::new(&self.target, self.color)
-            .brightness(self.brightness)
-            .calibrated(!self.uncalibrated)
+impl LightArgs {
+    pub fn state(&self) -> LightingState {
+        LightingState {
+            rgb: self.color,
+            brightness: self.brightness,
+            calibrated: !self.uncalibrated,
+            effect: self.effect,
+        }
+    }
+
+    pub fn request<'a>(&self, target: &'a str) -> Request<'a> {
+        self.state().request(target)
     }
 }
 
-pub fn print_planned(alias: &str, args: &SetArgs, output: Rgb) {
+pub fn print_planned(alias: &str, args: &LightArgs, output: Rgb) {
     println!(
-        "{alias}: requested {} -> output {} (brightness {}%)",
+        "{alias}: requested {} {} -> output {} (brightness {}%)",
+        args.effect,
         hex(args.color),
         hex(output),
         args.brightness
@@ -84,14 +92,23 @@ pub fn run(action: ManagedAction, config: Option<PathBuf>) -> CliResult {
                 hex(gains)
             );
         }
+        ManagedAction::Sync(args) => {
+            return super::daemon::sync(Path::new(DEFAULT_SOCKET), store.path(), &args);
+        }
+        ManagedAction::Mode { mode, execute } => {
+            return super::daemon::mode(Path::new(DEFAULT_SOCKET), store.path(), mode, execute);
+        }
+        ManagedAction::Status { json } => {
+            return super::daemon::lighting_status(Path::new(DEFAULT_SOCKET), store.path(), json);
+        }
         ManagedAction::Set(args) => {
             let socket = Path::new(DEFAULT_SOCKET);
             if !args.direct && ipc::available(socket) {
                 return super::daemon::set(socket, store.path(), &args);
             }
-            let plan = store.plan(&args.request())?;
+            let plan = store.plan(&args.light.request(&args.target))?;
             for item in &plan {
-                print_planned(item.alias(), &args, item.output());
+                print_planned(item.alias(), &args.light, item.output());
             }
             if !args.execute {
                 println!("Preview only; add --execute to apply. Config: {path}");

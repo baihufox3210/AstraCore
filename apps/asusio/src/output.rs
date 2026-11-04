@@ -49,6 +49,14 @@ pub mod parse {
             .map_err(|error: std::io::Error| error.to_string())
     }
 
+    pub fn lighting_mode(value: &str) -> Result<asusio_core::service::LightingMode, String> {
+        match value {
+            "sync" => Ok(asusio_core::service::LightingMode::Sync),
+            "individual" => Ok(asusio_core::service::LightingMode::Individual),
+            _ => Err("expected sync or individual".to_owned()),
+        }
+    }
+
     pub fn on_off(value: &str) -> Result<bool, String> {
         match value {
             "on" => Ok(true),
@@ -117,6 +125,7 @@ mod tests {
         assert_eq!(parse::hex_u8("70").unwrap(), 0x70);
         assert!(parse::hex_u8("100").is_err());
         assert_eq!(parse::on_off("off"), Ok(false));
+        assert!(parse::lighting_mode("sync").is_ok() && parse::lighting_mode("all").is_err());
         assert!(parse::on_off("1").is_err());
         assert!(parse::from_str::<asusio_core::cpu_profile::Mode>("overclock").is_err());
     }

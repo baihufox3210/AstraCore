@@ -1,6 +1,10 @@
 //! Newline-delimited JSON protocol between clients (CLI, GUI) and `asusiod`.
 //! One request and one response per connection.
-use crate::cpu_profile::{Custom, FanPlan, Mode, Profile};
+use crate::{
+    cpu_profile::{Custom, FanPlan, Mode, Profile},
+    lighting::{Availability, Effect, EffectInfo, TargetKind},
+    service::{LightingMode, LightingState},
+};
 use asusio_policy::Operation;
 use asusio_types::Rgb;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -28,10 +32,35 @@ pub enum Request {
         rgb: Rgb,
         brightness: u8,
         calibrated: bool,
+        #[serde(default)]
+        effect: Effect,
         execute: bool,
     },
     /// Reapply the recorded lighting state now.
     RestoreLighting,
+    /// Every target of `lighting_config` with kind, recorded and applied settings,
+    /// supported effects and readiness, plus the current mode and Sync settings.
+    GetLighting {
+        lighting_config: PathBuf,
+    },
+    /// Preview (or, with `execute`, apply and record) one setting for every target and
+    /// switch to Sync mode. Individual settings are kept.
+    SetSync {
+        lighting_config: PathBuf,
+        rgb: Rgb,
+        brightness: u8,
+        calibrated: bool,
+        #[serde(default)]
+        effect: Effect,
+        execute: bool,
+    },
+    /// Preview (or, with `execute`, apply and record) a switch between Sync and
+    /// individual mode, using the settings recorded for that mode.
+    SetLightingMode {
+        lighting_config: PathBuf,
+        mode: LightingMode,
+        execute: bool,
+    },
     /// Built-in and custom CPU profiles, the recorded selection and the CPU state.
     GetProfiles,
     /// Preview (or, with `execute`, apply and record) a CPU profile. For `custom`, the
@@ -54,6 +83,14 @@ impl Request {
             Self::SetLighting { execute: false, .. } => Operation::PreviewLighting,
             Self::SetLighting { execute: true, .. } => Operation::SetLighting,
             Self::RestoreLighting => Operation::RestoreLighting,
+            Self::GetLighting { .. } => Operation::ReadStatus,
+            Self::SetSync { execute, .. } | Self::SetLightingMode { execute, .. } => {
+                if *execute {
+                    Operation::SetLighting
+                } else {
+                    Operation::PreviewLighting
+                }
+            }
             Self::GetProfiles => Operation::ReadStatus,
             Self::SetProfile { execute: false, .. } => Operation::PreviewProfile,
             Self::SetProfile { execute: true, .. } => Operation::SetProfile,
@@ -85,7 +122,7 @@ impl Response {
 pub struct TargetResult {
     pub alias: String,
     pub output: Rgb,
-    /// `None` on success, or when nothing was executed.
+    /// `None` on success. Previews report targets that cannot be resolved.
     pub error: Option<String>,
 }
 
@@ -95,6 +132,38 @@ pub struct LightingResult {
     pub targets: Vec<TargetResult>,
     /// Set when hardware was written but the state for boot restore could not be saved.
     pub persist_error: Option<String>,
+    /// Lighting mode after the request.
+    #[serde(default)]
+    pub mode: LightingMode,
+}
+
+/// One configured lighting target as shown by a front end.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TargetStatus {
+    pub alias: String,
+    pub kind: TargetKind,
+    /// Configuration backend, e.g. `aura_argb` or `ene`.
+    pub backend: String,
+    /// Stored white-balance gains; `FFFFFF` means none.
+    pub white_balance: Rgb,
+    pub effects: Vec<EffectInfo>,
+    /// Individual settings, kept while Sync is active.
+    pub individual: Option<LightingState>,
+    /// What the current mode applies to this target (`None` if nothing is recorded).
+    pub applied: Option<LightingState>,
+    pub availability: Availability,
+    /// Error of the last write to this target, if it failed.
+    pub last_error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LightingReport {
+    pub mode: LightingMode,
+    pub sync: Option<LightingState>,
+    pub lighting_config: PathBuf,
+    /// Whether this is the configuration the daemon records and restores.
+    pub recorded: bool,
+    pub targets: Vec<TargetStatus>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -312,6 +381,7 @@ mod tests {
             rgb: [1, 2, 3],
             brightness: 50,
             calibrated: true,
+            effect: Effect::Static,
             execute: false,
         };
         let mut wire = Vec::new();
@@ -328,6 +398,37 @@ mod tests {
             "no newline"
         );
         assert!(read_request(br#"{"method":"format_disk"}\n"#.as_slice()).is_err());
+    }
+
+    #[test]
+    fn lighting_mode_requests_and_older_clients() {
+        let old = r#"{"method":"set_lighting","lighting_config":"/c.json","target":"gpu","rgb":[1,2,3],"brightness":10,"calibrated":true,"execute":true}"#;
+        let Request::SetLighting { effect, .. } = read_request(line(old).as_slice()).unwrap()
+        else {
+            panic!("set_lighting");
+        };
+        assert_eq!(
+            effect,
+            Effect::Static,
+            "requests without effect stay static"
+        );
+        let sync = r#"{"method":"set_sync","lighting_config":"/c.json","rgb":[0,0,255],"brightness":80,"calibrated":true,"effect":"static","execute":true}"#;
+        assert_eq!(
+            read_request(line(sync).as_slice()).unwrap().operation(),
+            Operation::SetLighting
+        );
+        let mode = r#"{"method":"set_lighting_mode","lighting_config":"/c.json","mode":"individual","execute":false}"#;
+        assert_eq!(
+            read_request(line(mode).as_slice()).unwrap().operation(),
+            Operation::PreviewLighting
+        );
+        let get = r#"{"method":"get_lighting","lighting_config":"/c.json"}"#;
+        assert_eq!(
+            read_request(line(get).as_slice()).unwrap().operation(),
+            Operation::ReadStatus
+        );
+        let effect = r#"{"method":"set_sync","lighting_config":"/c.json","rgb":[0,0,255],"brightness":80,"calibrated":true,"effect":"rainbow","execute":true}"#;
+        assert!(read_request(line(effect).as_slice()).is_err());
     }
 
     fn line(json: &str) -> Vec<u8> {

@@ -4,7 +4,7 @@ pub mod ipc;
 use crate::{
     cpu_profile::{self, Custom, FanPresets, Mode},
     fan_curve::FanCurve,
-    lighting::Request,
+    lighting::{Effect, Request},
     persist,
 };
 use asusio_types::Rgb;
@@ -176,14 +176,16 @@ pub struct ProfileState {
     pub custom: Option<Custom>,
 }
 
-/// Last requested lighting for one alias. Calibration is reapplied at restore time,
-/// so later white-balance changes take effect.
+/// Requested lighting for one alias, or for every alias in Sync mode. Calibration is
+/// reapplied at restore time, so later white-balance changes take effect.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LightingState {
     pub rgb: Rgb,
     pub brightness: u8,
     pub calibrated: bool,
+    #[serde(default)]
+    pub effect: Effect,
 }
 
 impl From<&Request<'_>> for LightingState {
@@ -192,6 +194,7 @@ impl From<&Request<'_>> for LightingState {
             rgb: request.rgb(),
             brightness: request.brightness,
             calibrated: request.calibrated,
+            effect: request.effect,
         }
     }
 }
@@ -201,7 +204,19 @@ impl LightingState {
         Request::new(alias, self.rgb)
             .brightness(self.brightness)
             .calibrated(self.calibrated)
+            .effect(self.effect)
     }
+}
+
+/// Whether every target shows the Sync settings, or its own.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LightingMode {
+    /// Each target uses its own recorded settings (the behavior before Sync existed).
+    #[default]
+    Individual,
+    /// Every configured target uses the one Sync setting.
+    Sync,
 }
 
 /// Desired hardware state recorded by the daemon for restoration at boot.
@@ -216,14 +231,77 @@ pub struct State {
     /// Owner the configuration must still belong to at restore time (`None` for root).
     #[serde(default)]
     pub config_owner: Option<u32>,
+    /// Individual settings per alias; kept while Sync is active.
     #[serde(default)]
     pub lighting: BTreeMap<String, LightingState>,
+    #[serde(default)]
+    pub lighting_mode: LightingMode,
+    /// Sync settings; kept while individual mode is active.
+    #[serde(default)]
+    pub sync: Option<LightingState>,
     /// CPU profile to reapply at boot.
     #[serde(default)]
     pub profile: Option<ProfileState>,
 }
 
 impl State {
+    /// What the current mode wants `alias` to show, if anything is recorded.
+    pub fn desired(&self, alias: &str) -> Option<LightingState> {
+        match self.lighting_mode {
+            LightingMode::Individual => self.lighting.get(alias).copied(),
+            LightingMode::Sync => self.sync,
+        }
+    }
+
+    /// Aliases the current mode restores: the recorded ones individually, or every
+    /// configured alias in Sync mode.
+    pub fn restore_aliases<'a>(
+        &self,
+        configured: impl IntoIterator<Item = &'a str>,
+    ) -> Vec<String> {
+        match (self.lighting_mode, self.sync) {
+            (LightingMode::Individual, _) => self.lighting.keys().cloned().collect(),
+            (LightingMode::Sync, Some(_)) => configured.into_iter().map(str::to_owned).collect(),
+            (LightingMode::Sync, None) => Vec::new(),
+        }
+    }
+
+    /// Point the recorded aliases at `config`. Individual settings belong to one
+    /// configuration, so they are dropped when it changes; Sync settings are not.
+    pub fn bind_lighting_config(&mut self, config: PathBuf, owner: Option<u32>) {
+        if self.lighting_config.as_ref() != Some(&config) {
+            self.lighting.clear();
+        }
+        self.lighting_config = Some(config);
+        self.config_owner = owner;
+    }
+
+    /// Switch to `mode`. Leaving Sync fills each configured alias without individual
+    /// settings with the Sync settings, so every target keeps what it shows now and is
+    /// restored at boot; existing individual settings are never overwritten.
+    pub fn switch_lighting_mode<'a>(
+        &mut self,
+        mode: LightingMode,
+        configured: impl IntoIterator<Item = &'a str>,
+    ) -> io::Result<()> {
+        if mode == LightingMode::Sync && self.sync.is_none() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "no Sync settings recorded; set them with `lighting sync` first",
+            ));
+        }
+        if mode == LightingMode::Individual
+            && self.lighting_mode == LightingMode::Sync
+            && let Some(sync) = self.sync
+        {
+            for alias in configured {
+                self.lighting.entry(alias.to_owned()).or_insert(sync);
+            }
+        }
+        self.lighting_mode = mode;
+        Ok(())
+    }
+
     /// A missing file is an empty state.
     pub fn load(path: &Path) -> io::Result<Self> {
         let bytes = match fs::read(path) {
@@ -305,6 +383,92 @@ mod tests {
     }
 
     #[test]
+    fn older_state_files_load_as_individual_static() {
+        let old = br#"{"schema_version":1,"lighting_config":"/home/u/.config/asusio/lighting.json","config_owner":1000,"lighting":{"gpu":{"rgb":[255,255,255],"brightness":100,"calibrated":true}}}"#;
+        let state: State = serde_json::from_slice(old).unwrap();
+        assert_eq!(state.lighting_mode, LightingMode::Individual);
+        assert_eq!(state.lighting["gpu"].effect, Effect::Static);
+        assert_eq!(state.sync, None);
+    }
+
+    #[test]
+    fn modes_keep_their_own_settings() {
+        let individual = LightingState {
+            rgb: [255, 0, 0],
+            brightness: 100,
+            calibrated: true,
+            effect: Effect::Static,
+        };
+        let sync = LightingState {
+            rgb: [0, 0, 255],
+            brightness: 40,
+            ..individual
+        };
+        let mut state = State::default();
+        state.bind_lighting_config("/a/lighting.json".into(), Some(1000));
+        state.lighting.insert("gpu".into(), individual);
+        state.sync = Some(sync);
+        let configured = ["board", "gpu"];
+        assert_eq!(state.desired("gpu"), Some(individual));
+        assert_eq!(state.desired("board"), None);
+        assert_eq!(state.restore_aliases(configured), ["gpu"]);
+        state.lighting_mode = LightingMode::Sync;
+        assert_eq!(state.desired("board"), Some(sync));
+        assert_eq!(state.restore_aliases(configured), ["board", "gpu"]);
+        state.lighting_mode = LightingMode::Individual;
+        assert_eq!(
+            state.desired("gpu"),
+            Some(individual),
+            "Sync did not overwrite it"
+        );
+
+        state.bind_lighting_config("/a/lighting.json".into(), Some(1000));
+        assert_eq!(state.lighting.len(), 1, "same configuration keeps entries");
+        state.bind_lighting_config("/b/lighting.json".into(), Some(1000));
+        assert!(state.lighting.is_empty() && state.sync == Some(sync));
+        state.lighting_mode = LightingMode::Sync;
+        state.sync = None;
+        assert!(state.restore_aliases(configured).is_empty());
+    }
+
+    #[test]
+    fn leaving_sync_fills_only_missing_individual_settings() {
+        let red = LightingState {
+            rgb: [255, 0, 0],
+            brightness: 100,
+            calibrated: true,
+            effect: Effect::Static,
+        };
+        let blue = LightingState {
+            rgb: [0, 0, 255],
+            ..red
+        };
+        let mut state = State::default();
+        assert!(
+            state
+                .switch_lighting_mode(LightingMode::Sync, ["gpu"])
+                .is_err(),
+            "Sync needs recorded settings"
+        );
+        state.lighting.insert("gpu".into(), red);
+        state.sync = Some(blue);
+        state
+            .switch_lighting_mode(LightingMode::Sync, ["gpu", "board"])
+            .unwrap();
+        assert_eq!(
+            state.lighting.len(),
+            1,
+            "entering Sync changes nothing else"
+        );
+        state
+            .switch_lighting_mode(LightingMode::Individual, ["gpu", "board"])
+            .unwrap();
+        assert_eq!(state.lighting["gpu"], red, "kept");
+        assert_eq!(state.lighting["board"], blue, "filled from Sync");
+        assert_eq!(state.sync, Some(blue), "Sync settings kept");
+    }
+
+    #[test]
     fn state_round_trips_and_missing_file_is_empty() {
         let directory =
             std::env::temp_dir().join(format!("asusio-state-test-{}", std::process::id()));
@@ -317,6 +481,7 @@ mod tests {
                 rgb: [255; 3],
                 brightness: 50,
                 calibrated: true,
+                effect: Effect::Static,
             },
         );
         state.save(&path).unwrap();
@@ -334,6 +499,17 @@ mod tests {
         });
         state.save(&path).unwrap();
         assert_eq!(State::load(&path).unwrap().profile, state.profile);
+        state.lighting_mode = LightingMode::Sync;
+        state.sync = Some(LightingState {
+            rgb: [1, 2, 3],
+            ..state.lighting["gpu"]
+        });
+        state.save(&path).unwrap();
+        let loaded = State::load(&path).unwrap();
+        assert_eq!(
+            (loaded.lighting_mode, loaded.sync),
+            (LightingMode::Sync, state.sync)
+        );
         fs::remove_dir_all(directory).unwrap();
     }
 }

@@ -1,7 +1,11 @@
 //! Command-line schema. Colors, addresses and payloads are validated while parsing.
 use crate::output::parse;
 use asusio_backends::aura_hid;
-use asusio_core::cpu_profile::{Epp, Governor, Mode};
+use asusio_core::{
+    cpu_profile::{Epp, Governor, Mode},
+    lighting::Effect,
+    service::LightingMode,
+};
 use asusio_types::Rgb;
 use clap::{Args, Parser, Subcommand};
 use std::path::PathBuf;
@@ -132,7 +136,23 @@ pub enum ManagedAction {
         json: bool,
     },
     /// Preview or set an alias/all with device calibration and brightness
+    /// (individual mode)
     Set(SetArgs),
+    /// Preview or set one color/effect for every target (Sync mode, through asusiod)
+    Sync(SyncArgs),
+    /// Preview or switch between Sync and individual mode (through asusiod)
+    Mode {
+        /// sync or individual
+        #[arg(value_parser = parse::lighting_mode)]
+        mode: LightingMode,
+        #[arg(long)]
+        execute: bool,
+    },
+    /// Show every target: kind, recorded settings, effects and readiness (through asusiod)
+    Status {
+        #[arg(long)]
+        json: bool,
+    },
     /// Persist RGB channel gains as a hex triplet; FFFFFF resets compensation
     Calibrate {
         target: String,
@@ -141,12 +161,9 @@ pub enum ManagedAction {
     },
 }
 
-/// A named lighting request. With `--execute`, it goes through asusiod when that is
-/// running (no sudo; recorded for boot restore), otherwise directly to hardware.
+/// Color, brightness, calibration and effect shared by `set` and `sync`.
 #[derive(Args)]
-pub struct SetArgs {
-    /// Configured alias, or `all`
-    pub target: String,
+pub struct LightArgs {
     #[arg(value_name = "RRGGBB", value_parser = parse::rgb)]
     pub color: Rgb,
     #[arg(long, default_value_t = 100, value_parser = clap::value_parser!(u8).range(0..=100))]
@@ -154,11 +171,33 @@ pub struct SetArgs {
     /// Bypass local compensation for comparison; does not change stored calibration
     #[arg(long)]
     pub uncalibrated: bool,
+    /// Controller effect; only `static` is supported so far
+    #[arg(long, default_value = "static", value_parser = parse::from_str::<Effect>)]
+    pub effect: Effect,
+}
+
+/// A named lighting request. With `--execute`, it goes through asusiod when that is
+/// running (no sudo; recorded for boot restore), otherwise directly to hardware.
+#[derive(Args)]
+pub struct SetArgs {
+    /// Configured alias, or `all`
+    pub target: String,
+    #[command(flatten)]
+    pub light: LightArgs,
     #[arg(long)]
     pub execute: bool,
     /// Write hardware directly even when asusiod is running (not recorded for boot)
     #[arg(long)]
     pub direct: bool,
+}
+
+/// Sync mode: one setting for every target, recorded by asusiod.
+#[derive(Args)]
+pub struct SyncArgs {
+    #[command(flatten)]
+    pub light: LightArgs,
+    #[arg(long)]
+    pub execute: bool,
 }
 
 #[derive(Subcommand)]

@@ -17,10 +17,12 @@
 //! Planning resolves metadata only; hardware changes require explicit [`execute`].
 pub mod color;
 pub mod config;
+pub mod info;
 mod runtime;
 
 pub use color::{hex, parse_hex};
 pub use config::{Config, Device, Store, Target};
+pub use info::{Availability, Effect, EffectInfo, TargetKind};
 pub use runtime::{InterfaceKind, NativeInterface, discover_interfaces};
 
 use asusio_types::Rgb;
@@ -38,6 +40,7 @@ pub struct Request<'a> {
     rgb: Rgb,
     pub(crate) brightness: u8,
     pub(crate) calibrated: bool,
+    pub(crate) effect: Effect,
 }
 
 impl<'a> Request<'a> {
@@ -48,6 +51,7 @@ impl<'a> Request<'a> {
             rgb,
             brightness: 100,
             calibrated: true,
+            effect: Effect::Static,
         }
     }
 
@@ -60,6 +64,12 @@ impl<'a> Request<'a> {
     /// `false` bypasses stored compensation for this request only.
     pub fn calibrated(mut self, calibrated: bool) -> Self {
         self.calibrated = calibrated;
+        self
+    }
+
+    /// Hardware effect; [`plan`] rejects effects the target does not support.
+    pub fn effect(mut self, effect: Effect) -> Self {
+        self.effect = effect;
         self
     }
 
@@ -109,6 +119,12 @@ pub fn plan(config: &Config, request: &Request) -> io::Result<Vec<PlannedTarget>
         .iter()
         .filter(|(alias, _)| selected(alias))
         .map(|(alias, configured)| {
+            if !info::supports(&configured.device, request.effect) {
+                return Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    format!("{alias} does not support the {} effect", request.effect),
+                ));
+            }
             let gains = if request.calibrated {
                 configured.white_balance
             } else {

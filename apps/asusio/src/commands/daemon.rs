@@ -1,39 +1,188 @@
 //! Client commands for the asusiod system service.
 use super::lighting::{print_planned, report_outcomes};
 use crate::{
-    cli::{DaemonAction, SetArgs},
+    cli::{DaemonAction, LightArgs, SetArgs, SyncArgs},
     output::{CliResult, print_json},
 };
 use asusio_core::{
-    lighting::hex,
-    service::ipc::{self, FanState, LightingResult, Request, Status, TargetResult},
+    lighting::{Availability, TargetKind, hex},
+    service::{
+        LightingMode, LightingState,
+        ipc::{
+            self, FanState, LightingReport, LightingResult, Request, Status, TargetResult,
+            TargetStatus,
+        },
+    },
 };
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-/// `lighting set` through the daemon: no sudo needed, and executed requests are
-/// recorded for boot restore.
-pub fn set(socket: &Path, lighting_config: &Path, args: &SetArgs) -> CliResult {
-    let request = Request::SetLighting {
-        lighting_config: std::fs::canonicalize(lighting_config)?,
-        target: args.target.clone(),
-        rgb: args.color,
-        brightness: args.brightness,
-        calibrated: !args.uncalibrated,
-        execute: args.execute,
-    };
-    let result: LightingResult = ipc::call(socket, &request)?;
+/// The daemon reads the configuration on the caller's behalf, so it needs a real path.
+fn config_path(lighting_config: &Path) -> std::io::Result<PathBuf> {
+    std::fs::canonicalize(lighting_config)
+}
+
+fn mode_name(mode: LightingMode) -> &'static str {
+    match mode {
+        LightingMode::Individual => "individual",
+        LightingMode::Sync => "sync",
+    }
+}
+
+/// Print planned outputs, then (when executed) per-target outcomes and recording.
+fn print_result(result: &LightingResult, light: Option<&LightArgs>) -> CliResult {
     for target in &result.targets {
-        print_planned(&target.alias, args, target.output);
+        match light {
+            Some(light) => print_planned(&target.alias, light, target.output),
+            None => println!("{}: output {}", target.alias, hex(target.output)),
+        }
+        if !result.executed
+            && let Some(error) = &target.error
+        {
+            println!("  not ready: {error}");
+        }
     }
     if !result.executed {
-        println!("Preview only (via asusiod); add --execute to apply and keep across reboots");
+        println!(
+            "Preview only (via asusiod, mode {}); add --execute to apply and keep across reboots",
+            mode_name(result.mode)
+        );
         return Ok(());
     }
     if let Some(error) = &result.persist_error {
         eprintln!("warning: applied, but not recorded for boot restore: {error}");
     }
     report(&result.targets)?;
-    println!("Recorded by asusiod; restored at boot");
+    println!(
+        "Recorded by asusiod (mode {}); restored at boot",
+        mode_name(result.mode)
+    );
+    Ok(())
+}
+
+/// `lighting set` through the daemon: no sudo needed, and executed requests are
+/// recorded for boot restore. Executing switches to individual mode.
+pub fn set(socket: &Path, lighting_config: &Path, args: &SetArgs) -> CliResult {
+    let light = args.light.state();
+    let request = Request::SetLighting {
+        lighting_config: config_path(lighting_config)?,
+        target: args.target.clone(),
+        rgb: light.rgb,
+        brightness: light.brightness,
+        calibrated: light.calibrated,
+        effect: light.effect,
+        execute: args.execute,
+    };
+    let result: LightingResult = ipc::call(socket, &request)?;
+    print_result(&result, Some(&args.light))
+}
+
+/// `lighting sync`: one setting for every target; executing switches to Sync mode.
+pub fn sync(socket: &Path, lighting_config: &Path, args: &SyncArgs) -> CliResult {
+    let LightingState {
+        rgb,
+        brightness,
+        calibrated,
+        effect,
+    } = args.light.state();
+    let request = Request::SetSync {
+        lighting_config: config_path(lighting_config)?,
+        rgb,
+        brightness,
+        calibrated,
+        effect,
+        execute: args.execute,
+    };
+    let result: LightingResult = ipc::call(socket, &request)?;
+    print_result(&result, Some(&args.light))
+}
+
+pub fn mode(socket: &Path, lighting_config: &Path, mode: LightingMode, execute: bool) -> CliResult {
+    let request = Request::SetLightingMode {
+        lighting_config: config_path(lighting_config)?,
+        mode,
+        execute,
+    };
+    let result: LightingResult = ipc::call(socket, &request)?;
+    if result.targets.is_empty() {
+        println!("No settings recorded for {} mode", mode_name(mode));
+    }
+    print_result(&result, None)
+}
+
+fn describe(state: &LightingState) -> String {
+    let calibration = if state.calibrated {
+        "calibrated"
+    } else {
+        "uncalibrated"
+    };
+    format!(
+        "{} {} {}% {calibration}",
+        state.effect,
+        hex(state.rgb),
+        state.brightness
+    )
+}
+
+fn readiness(availability: &Availability) -> String {
+    match availability {
+        Availability::Available => "available".to_owned(),
+        Availability::NotReady { reason } => format!("not ready: {reason}"),
+        Availability::Unavailable { reason } => format!("unavailable: {reason}"),
+    }
+}
+
+/// Display order of device groups.
+const KINDS: [TargetKind; 7] = [
+    TargetKind::Board,
+    TargetKind::Argb,
+    TargetKind::Keyboard,
+    TargetKind::Graphics,
+    TargetKind::Memory,
+    TargetKind::Screen,
+    TargetKind::Other,
+];
+
+fn print_target(target: &TargetStatus) {
+    let applied = target
+        .applied
+        .as_ref()
+        .map_or_else(|| "nothing recorded".to_owned(), describe);
+    let kind = serde_json::to_value(target.kind).unwrap_or_default();
+    println!(
+        "  {:<10}{:<10}{applied}",
+        target.alias,
+        kind.as_str().unwrap_or_default()
+    );
+    println!("            {}", readiness(&target.availability));
+    if let Some(error) = &target.last_error {
+        println!("            last write failed: {error}");
+    }
+}
+
+pub fn lighting_status(socket: &Path, lighting_config: &Path, json: bool) -> CliResult {
+    let request = Request::GetLighting {
+        lighting_config: config_path(lighting_config)?,
+    };
+    let report: LightingReport = ipc::call(socket, &request)?;
+    if json {
+        return print_json(serde_json::to_value(&report)?);
+    }
+    println!("Mode: {}", mode_name(report.mode));
+    match &report.sync {
+        Some(sync) => println!("Sync: {}", describe(sync)),
+        None => println!("Sync: not set"),
+    }
+    if !report.recorded {
+        println!(
+            "Note: {} is not the configuration asusiod restores",
+            report.lighting_config.display()
+        );
+    }
+    for kind in KINDS {
+        for target in report.targets.iter().filter(|target| target.kind == kind) {
+            print_target(target);
+        }
+    }
     Ok(())
 }
 

@@ -3,7 +3,10 @@
 use crate::{daemon::Daemon, signals};
 use asusio_core::{
     lighting::Request as LightingRequest,
-    service::ipc::{self, Request, Response},
+    service::{
+        LightingState,
+        ipc::{self, Request, Response},
+    },
 };
 use asusio_policy::Caller;
 use std::{
@@ -104,11 +107,13 @@ fn dispatch(daemon: &Daemon, caller: &Caller, request: Request) -> Response {
             rgb,
             brightness,
             calibrated,
+            effect,
             execute,
         } => {
             let request = LightingRequest::new(&target, rgb)
                 .brightness(brightness)
-                .calibrated(calibrated);
+                .calibrated(calibrated)
+                .effect(effect);
             Response::from_result(daemon.set_lighting(
                 lighting_config,
                 caller.uid,
@@ -116,6 +121,35 @@ fn dispatch(daemon: &Daemon, caller: &Caller, request: Request) -> Response {
                 execute,
             ))
         }
+        Request::GetLighting { lighting_config } => {
+            Response::from_result(daemon.lighting_report(lighting_config, caller.uid))
+        }
+        Request::SetSync {
+            lighting_config,
+            rgb,
+            brightness,
+            calibrated,
+            effect,
+            execute,
+        } => {
+            let desired = LightingState {
+                rgb,
+                brightness,
+                calibrated,
+                effect,
+            };
+            Response::from_result(daemon.set_sync(lighting_config, caller.uid, desired, execute))
+        }
+        Request::SetLightingMode {
+            lighting_config,
+            mode,
+            execute,
+        } => Response::from_result(daemon.set_lighting_mode(
+            lighting_config,
+            caller.uid,
+            mode,
+            execute,
+        )),
         Request::RestoreLighting => Response::from_result(Ok(daemon.restore_now())),
         Request::GetProfiles => Response::from_result(Ok(daemon.profiles())),
         Request::SetProfile {

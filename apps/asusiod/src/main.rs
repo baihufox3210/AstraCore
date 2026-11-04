@@ -2,6 +2,8 @@
 //! serves lighting and profile requests to authorized local users over a Unix socket.
 mod daemon;
 mod fans;
+mod lighting;
+mod profile;
 mod server;
 mod signals;
 

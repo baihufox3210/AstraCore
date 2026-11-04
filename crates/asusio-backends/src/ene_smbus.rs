@@ -21,6 +21,24 @@ pub struct EneInfo {
     pub effect_register: u16,
 }
 
+/// What a supported ENE firmware drives, from local identification: `AUMA0-E6K5-0107`
+/// answered on the RTX 3070 Strix NVIDIA adapter at `0x67`; `AUDA0-E6K5-0101` on both
+/// DIMMs at `0x71`/`0x73`; `DIMM_LED-*` is the DRAM firmware name used by OpenRGB.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Class {
+    Graphics,
+    Memory,
+}
+
+/// `None` for firmware without a supported profile.
+pub fn class(version: &str) -> Option<Class> {
+    match version {
+        "AUMA0-E6K5-0107" => Some(Class::Graphics),
+        "AUDA0-E6K5-0101" | "DIMM_LED-0102" | "DIMM_LED-0103" => Some(Class::Memory),
+        _ => None,
+    }
+}
+
 fn profile(version: &str) -> io::Result<(u16, u16, u8)> {
     match version {
         "DIMM_LED-0102" | "DIMM_LED-0103" => Ok((0x8010, 0x1c02, 5)),
@@ -361,6 +379,20 @@ mod tests {
         assert_eq!(profile("AUMA0-E6K5-0107").unwrap(), (0x8160, 0x1c03, 64));
         assert!(!is_rgb_address(0x51) && is_rgb_address(0x67));
         assert_eq!(profile("DIMM_LED-0102").unwrap(), (0x8010, 0x1c02, 5));
+        for version in [
+            "DIMM_LED-0102",
+            "DIMM_LED-0103",
+            "AUDA0-E6K5-0101",
+            "AUMA0-E6K5-0107",
+        ] {
+            assert!(
+                profile(version).is_ok() && class(version).is_some(),
+                "{version}"
+            );
+        }
+        assert_eq!(class("AUMA0-E6K5-0107"), Some(Class::Graphics));
+        assert_eq!(class("AUDA0-E6K5-0101"), Some(Class::Memory));
+        assert_eq!(class("unknown"), None);
     }
     #[test]
     fn static_plan_uses_rbg_and_never_saves_or_remaps_addresses() {
