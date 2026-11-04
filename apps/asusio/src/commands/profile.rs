@@ -256,7 +256,7 @@ mod tests {
             (merged.epp, merged.boost, merged.fan_preset),
             (Epp::Power, false, None)
         );
-        let mut builtin = args(Mode::Turbo);
+        let mut builtin = args(Mode::Performance);
         builtin.boost = Some(false);
         assert!(custom_from(&builtin, None).is_err());
     }

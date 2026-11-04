@@ -339,7 +339,7 @@ mod tests {
         let custom = r#"{"method":"set_profile","mode":"custom","custom":{"governor":"powersave","epp":"power","boost":false,"fan_preset":"silent"},"execute":true}"#;
         let set = read_request(line(custom).as_slice()).unwrap();
         assert_eq!(set.operation(), Operation::SetProfile);
-        let preview = r#"{"method":"set_profile","mode":"turbo","execute":false}"#;
+        let preview = r#"{"method":"set_profile","mode":"performance","execute":false}"#;
         let preview = read_request(line(preview).as_slice()).unwrap();
         assert_eq!(preview.operation(), Operation::PreviewProfile);
         assert_eq!(Request::Telemetry.operation(), Operation::ReadTelemetry);

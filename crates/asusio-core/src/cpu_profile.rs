@@ -15,16 +15,14 @@ pub enum Mode {
     Silent,
     Balanced,
     Performance,
-    Turbo,
     Custom,
 }
 
 impl Mode {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 4] = [
         Self::Silent,
         Self::Balanced,
         Self::Performance,
-        Self::Turbo,
         Self::Custom,
     ];
 
@@ -33,7 +31,6 @@ impl Mode {
             Self::Silent => "silent",
             Self::Balanced => "balanced",
             Self::Performance => "performance",
-            Self::Turbo => "turbo",
             Self::Custom => "custom",
         }
     }
@@ -58,10 +55,6 @@ impl Mode {
                 settings(Governor::Powersave, Epp::Performance, true),
                 Some("performance"),
             ),
-            Self::Turbo => (
-                settings(Governor::Performance, Epp::Performance, true),
-                Some("turbo"),
-            ),
             Self::Custom => return None,
         })
     }
@@ -81,7 +74,7 @@ impl FromStr for Mode {
             .find(|mode| mode.as_str() == value)
             .ok_or_else(|| {
                 invalid(format!(
-                    "unknown profile {value:?}; expected silent, balanced, performance, turbo or custom"
+                    "unknown profile {value:?}; expected silent, balanced, performance or custom"
                 ))
             })
     }
@@ -255,10 +248,6 @@ mod tests {
             cpu(Mode::Performance),
             settings(Governor::Powersave, Epp::Performance, true)
         );
-        assert_eq!(
-            cpu(Mode::Turbo),
-            settings(Governor::Performance, Epp::Performance, true)
-        );
         assert!(Mode::Custom.builtin().is_none());
         for mode in Mode::ALL {
             assert_eq!(mode.as_str().parse::<Mode>().unwrap(), mode);
@@ -266,7 +255,11 @@ mod tests {
                 cpu.validate().unwrap();
             }
         }
-        assert_eq!(serde_json::to_value(Mode::Turbo).unwrap(), "turbo");
+        assert_eq!(
+            serde_json::to_value(Mode::Performance).unwrap(),
+            "performance"
+        );
+        assert!("turbo".parse::<Mode>().is_err(), "merged into performance");
         assert!("overclock".parse::<Mode>().is_err());
         assert_eq!(format!("{:<8}|", Mode::Silent), "silent  |", "honors width");
     }
@@ -285,23 +278,23 @@ mod tests {
 
     #[test]
     fn presets_are_selected_by_name_only() {
-        let presets = FanPresets::from([("turbo".to_owned(), vec![curve(2), curve(3)])]);
-        let turbo = resolve(Mode::Turbo, None, &presets, &[]).unwrap();
-        assert_eq!(turbo.fan.preset.as_deref(), Some("turbo"));
-        assert_eq!(turbo.fan.curves.len(), 2);
-        let wire = serde_json::to_value(&turbo).unwrap();
+        let presets = FanPresets::from([("performance".to_owned(), vec![curve(2), curve(3)])]);
+        let performance = resolve(Mode::Performance, None, &presets, &[]).unwrap();
+        assert_eq!(performance.fan.preset.as_deref(), Some("performance"));
+        assert_eq!(performance.fan.curves.len(), 2);
+        let wire = serde_json::to_value(&performance).unwrap();
         assert!(
             wire["fan"].get("curves").is_none(),
             "curves never leave the daemon"
         );
-        assert_eq!(wire["governor"], "performance");
+        assert_eq!(wire["epp"], "performance");
 
         let mut custom = Custom {
             fan_preset: Some("nope".into()),
             ..Custom::default()
         };
         assert!(resolve(Mode::Custom, Some(&custom), &presets, &[]).is_err());
-        custom.fan_preset = Some("turbo".into());
+        custom.fan_preset = Some("performance".into());
         let resolved = resolve(Mode::Custom, Some(&custom), &presets, &[]).unwrap();
         assert_eq!(resolved.fan.curves.len(), 2);
         assert!(resolve(Mode::Custom, None, &presets, &[]).is_err());

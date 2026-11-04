@@ -179,7 +179,7 @@ pub enum ProfileAction {
 
 #[derive(Args)]
 pub struct ProfileSetArgs {
-    /// silent, balanced, performance, turbo or custom
+    /// silent, balanced, performance or custom
     #[arg(value_parser = parse::from_str::<Mode>)]
     pub mode: Mode,
     /// Custom only: performance or powersave

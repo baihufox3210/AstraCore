@@ -64,8 +64,9 @@ pub struct ServiceConfig {
     /// (defined) preset. Empty means firmware control.
     #[serde(default)]
     pub fan_curves: Vec<FanCurve>,
-    /// Named curve sets that CPU profiles may select, e.g. `silent`, `performance`,
-    /// `turbo`. Clients can only choose a name; curves are defined here only.
+    /// Named curve sets that CPU profiles may select: `silent` and `performance` are
+    /// used by the built-in profiles, any other name only by `custom`. Clients can only
+    /// choose a name; curves are defined here only.
     #[serde(default)]
     pub fan_presets: FanPresets,
     #[serde(default = "default_interval")]

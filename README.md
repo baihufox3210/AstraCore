@@ -324,8 +324,11 @@ CPU, plus an optional fan-curve preset:
 | `silent` | `powersave` | `power` | off | preset `silent`, if defined |
 | `balanced` | `powersave` | `balance_performance` | on | default curves |
 | `performance` | `powersave` | `performance` | on | preset `performance`, if defined |
-| `turbo` | `performance` | `performance` | on | preset `turbo`, if defined |
 | `custom` | any allowed | any allowed | on/off | any defined preset, or default |
+
+The `performance` governor (minimum frequency raised to nominal) is only available
+through `custom`; built-in profiles keep `powersave`, where amd-pstate-epp still
+scales up to full speed under load.
 
 ```bash
 asusio profile list                    # profiles, recorded selection, fan presets
