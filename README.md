@@ -296,7 +296,8 @@ The second command disables compensation; the third bypasses it for that
 invocation only. Existing low-level diagnostics such as `ene-static` remain
 raw and do not apply local compensation. Use `lighting set` for calibrated
 control. Calibration persists across rebuilds/reboots and is loaded on each
-managed command; automatic color restoration at boot is not installed.
+managed command. For automatic color restoration at boot, see the `asusiod`
+system service below.
 
 For initial installation on another machine, prepare a local schema-1 manifest
 with `targets` and no `host_fingerprint`, then run
@@ -311,6 +312,67 @@ on the same locked fd before color writes. No bus scan or DIMM address remapping
 is introduced. Changing ports, hardware, firmware or topology may require an
 explicit configuration update. A moved DIMM address with the same firmware and
 LED count cannot be distinguished by this protocol alone.
+
+## System service: boot restore and fan curves
+
+`asusiod` is a root system service. It reapplies recorded lighting at boot, runs
+optional fan curves, and lets members of the `asusio` group control lighting
+through `/run/asusio/asusiod.sock` (mode `0660`) without sudo.
+
+```bash
+cargo build --release --workspace
+./target/release/asusio-helper install --lighting-config "$HOME/.config/asusio/lighting.json"
+sudo ./target/release/asusio-helper install --lighting-config "$HOME/.config/asusio/lighting.json" --execute
+sudo groupadd -r asusio && sudo usermod -aG asusio "$USER"   # then log out and back in
+sudo systemctl daemon-reload && sudo systemctl enable --now asusiod
+asusio daemon set all 80C0FF                # preview through the daemon
+asusio daemon set all 80C0FF --execute      # apply and record for boot restore
+asusio daemon status
+```
+
+The helper previews by default. With `--execute` it installs `asusiod` and
+`asusio` into `/usr/local/bin`, writes the unit, and creates
+`/etc/asusio/asusiod.json` and `/etc/modules-load.d/asusio.conf` (`i2c-dev`,
+`nct6775`) only when they are absent. It never runs `systemctl` or edits groups.
+`asusio-helper uninstall [--execute]` removes the unit and module file, but
+keeps the configuration and state.
+
+**Boot restore.** Only `asusio daemon set ... --execute` records state, in
+`/var/lib/asusio/state.json`. Direct `lighting set` writes are not recorded. The
+recorded value is the requested color, brightness and calibration flag, so a
+later `lighting calibrate` takes effect on the next restore. At startup, targets
+that are not ready yet are retried every 10 seconds for 10 minutes. The screen
+needs this, because its lianli-daemon socket only appears after login.
+`asusio daemon restore` reapplies the recorded state immediately. Desired state is
+recorded even when a target fails, so a later restore retries it.
+
+**Fan curves** are configured only in the root-owned `/etc/asusio/asusiod.json`
+and never through the socket. The list is empty by default, because the
+PWM-to-header mapping has not been verified. Example:
+
+```json
+"fan_curves": [{
+  "channel": 2,
+  "sensor": {"chip": "k10temp", "label": "Tctl"},
+  "points": [{"celsius": 40, "percent": 30}, {"celsius": 60, "percent": 50},
+             {"celsius": 80, "percent": 100}],
+  "hysteresis_celsius": 3
+}]
+```
+
+Curves must have at least two points with increasing temperature and
+non-decreasing duty from 30% to 100%, and must end at 100%. Duty rises
+immediately; it falls only after the temperature drops by the hysteresis. A
+missing, ambiguous or implausible sensor reading, a failed PWM write, a daemon
+stop, or a crash returns the channel to firmware control: `ExecStopPost` runs
+`asusiod --release-fans`, and panics abort the process. A released curve stays
+off until the daemon restarts. Restart the service after editing the file.
+
+**Access control.** The socket mode is the first gate. Each request is then
+checked by `asusio-policy` against `SO_PEERCRED` credentials: root, the
+daemon's user, and members of `client_group` are allowed. Previews and status do
+not write hardware. The IPC protocol (`asusio_core::service::ipc`) is
+newline-delimited JSON with one request per connection.
 
 ## Library architecture and integration
 
@@ -329,6 +391,12 @@ lighting orchestration; applications own argument parsing and presentation.
 | `asusio-backends` | Device protocols and OS transport; each exposes `DEVICE` (USB ID) and `inspect` |
 | `asusio-discovery` | Read-only sysfs scans: `hid::discover`, `usb::discover`, …; default roots in `sysfs` |
 | `asusio-types` | Shared data: `Rgb`, `UsbId`, device records, `DiscoveryReport`, `Capability` |
+| `asusio_core::service` | Daemon configuration, recorded state and IPC protocol (`ipc::call`) |
+| `asusio_core::fan_curve` | Curve validation, interpolation/hysteresis controller, hwmon/nct6799 adapters |
+| `asusio-hal` | `TemperatureSensor` / `PwmOutput` traits used by control loops |
+| `asusio-policy` | Per-request authorization of daemon clients |
+| `apps/asusiod` | System service: boot restore, fan-curve loop, socket server |
+| `apps/asusio-helper` | Previewable installer for the unit, configuration and module loading |
 
 A Rust application can use the same calibration and identity validation without
 shelling out to the CLI:

@@ -36,8 +36,8 @@ pub const ALL: &str = "all";
 pub struct Request<'a> {
     target: &'a str,
     rgb: Rgb,
-    brightness: u8,
-    calibrated: bool,
+    pub(crate) brightness: u8,
+    pub(crate) calibrated: bool,
 }
 
 impl<'a> Request<'a> {

@@ -2,7 +2,7 @@
 use crate::output::parse;
 use asusio_backends::aura_hid;
 use asusio_types::Rgb;
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -61,6 +61,14 @@ pub enum Commands {
         json: bool,
     },
 
+    /// Talk to the asusiod system service (boot restore, fan curves)
+    Daemon {
+        #[arg(long, global = true, default_value = asusio_core::service::DEFAULT_SOCKET)]
+        socket: PathBuf,
+        #[command(subcommand)]
+        action: DaemonAction,
+    },
+
     /// Control lighting through native hardware backends
     Lighting {
         /// Host-local lighting configuration (required explicitly under sudo)
@@ -115,24 +123,43 @@ pub enum ManagedAction {
         json: bool,
     },
     /// Preview or set an alias/all with device calibration and brightness
-    Set {
-        target: String,
-        #[arg(value_name = "RRGGBB", value_parser = parse::rgb)]
-        color: Rgb,
-        #[arg(long, default_value_t = 100, value_parser = clap::value_parser!(u8).range(0..=100))]
-        brightness: u8,
-        /// Bypass local compensation for comparison; does not change stored calibration
-        #[arg(long)]
-        uncalibrated: bool,
-        #[arg(long)]
-        execute: bool,
-    },
+    Set(SetArgs),
     /// Persist RGB channel gains as a hex triplet; FFFFFF resets compensation
     Calibrate {
         target: String,
         #[arg(value_name = "RRGGBB", value_parser = parse::rgb)]
         gains: Rgb,
     },
+}
+
+/// A named lighting request; shared by `lighting set` and `daemon set`.
+#[derive(Args)]
+pub struct SetArgs {
+    /// Configured alias, or `all`
+    pub target: String,
+    #[arg(value_name = "RRGGBB", value_parser = parse::rgb)]
+    pub color: Rgb,
+    #[arg(long, default_value_t = 100, value_parser = clap::value_parser!(u8).range(0..=100))]
+    pub brightness: u8,
+    /// Bypass local compensation for comparison; does not change stored calibration
+    #[arg(long)]
+    pub uncalibrated: bool,
+    #[arg(long)]
+    pub execute: bool,
+}
+
+/// Requests to the asusiod system service; no sudo needed for members of its group.
+#[derive(Subcommand)]
+pub enum DaemonAction {
+    /// Show restore progress and fan-curve state
+    Status {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Preview or set lighting through the daemon; executed requests are restored at boot
+    Set(SetArgs),
+    /// Reapply the recorded lighting now (e.g. after logging in)
+    Restore,
 }
 
 /// Raw per-device commands addressed by explicit IDs; no calibration is applied.

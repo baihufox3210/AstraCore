@@ -82,6 +82,8 @@ version = "0.1.0"
 dependencies = [
  "asusio-backends",
  "asusio-discovery",
+ "asusio-hal",
+ "asusio-policy",
  "asusio-types",
  "libc",
  "serde",
@@ -107,6 +109,11 @@ version = "0.1.0"
 [[package]]
 name = "asusio-helper"
 version = "0.1.0"
+dependencies = [
+ "asusio-core",
+ "clap",
+ "serde_json",
+]
 
 [[package]]
 name = "asusio-policy"
@@ -123,6 +130,13 @@ dependencies = [
 [[package]]
 name = "asusiod"
 version = "0.1.0"
+dependencies = [
+ "asusio-core",
+ "asusio-policy",
+ "clap",
+ "libc",
+ "serde_json",
+]
 
 [[package]]
 name = "clap"

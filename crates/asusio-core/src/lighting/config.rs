@@ -4,8 +4,7 @@ use asusio_types::Rgb;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
-    fs,
-    io::{self, Write},
+    fs, io,
     os::unix::fs::OpenOptionsExt,
     path::{Path, PathBuf},
 };
@@ -162,46 +161,7 @@ pub(crate) fn load(path: &Path) -> io::Result<Config> {
     Ok(config)
 }
 pub(crate) fn save(path: &Path, config: &Config, replace: bool) -> io::Result<()> {
-    if fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
-        return Err(invalid("refusing to replace a symlink configuration"));
-    }
-    let parent = path
-        .parent()
-        .filter(|path| !path.as_os_str().is_empty())
-        .unwrap_or(Path::new("."));
-    fs::create_dir_all(parent)?;
-    static NEXT_TEMP: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let (temp, mut file) = loop {
-        let id = NEXT_TEMP.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let path = parent.join(format!(".asusio-lighting-{}-{id}.tmp", std::process::id()));
-        match fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&path)
-        {
-            Ok(file) => break (path, file),
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
-            Err(error) => return Err(error),
-        }
-    };
-    let result = (|| {
-        serde_json::to_writer_pretty(&mut file, config)
-            .map_err(|error| invalid(error.to_string()))?;
-        file.write_all(b"\n")?;
-        file.sync_all()?;
-        if replace {
-            fs::rename(&temp, path)?;
-        } else {
-            fs::hard_link(&temp, path)?;
-        }
-        Ok(())
-    })();
-    let _ = fs::remove_file(&temp);
-    if result.is_ok() {
-        fs::File::open(parent)?.sync_all()?;
-    }
-    result
+    crate::persist::write_json(path, config, replace)
 }
 
 /// Host-local configuration transactions shared by CLI and library clients.
