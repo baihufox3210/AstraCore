@@ -1,7 +1,7 @@
 //! Client commands for the asusiod system service.
 use super::lighting::{print_planned, report_outcomes};
 use crate::{
-    cli::DaemonAction,
+    cli::{DaemonAction, SetArgs},
     output::{CliResult, print_json},
 };
 use asusio_core::{
@@ -9,6 +9,33 @@ use asusio_core::{
     service::ipc::{self, FanState, LightingResult, Request, Status, TargetResult},
 };
 use std::path::Path;
+
+/// `lighting set` through the daemon: no sudo needed, and executed requests are
+/// recorded for boot restore.
+pub fn set(socket: &Path, lighting_config: &Path, args: &SetArgs) -> CliResult {
+    let request = Request::SetLighting {
+        lighting_config: std::fs::canonicalize(lighting_config)?,
+        target: args.target.clone(),
+        rgb: args.color,
+        brightness: args.brightness,
+        calibrated: !args.uncalibrated,
+        execute: args.execute,
+    };
+    let result: LightingResult = ipc::call(socket, &request)?;
+    for target in &result.targets {
+        print_planned(&target.alias, args, target.output);
+    }
+    if !result.executed {
+        println!("Preview only (via asusiod); add --execute to apply and keep across reboots");
+        return Ok(());
+    }
+    if let Some(error) = &result.persist_error {
+        eprintln!("warning: applied, but not recorded for boot restore: {error}");
+    }
+    report(&result.targets)?;
+    println!("Recorded by asusiod; restored at boot");
+    Ok(())
+}
 
 pub fn run(action: DaemonAction, socket: &Path) -> CliResult {
     match action {
@@ -18,7 +45,10 @@ pub fn run(action: DaemonAction, socket: &Path) -> CliResult {
                 return print_json(serde_json::to_value(&status)?);
             }
             println!("asusiod {} ({})", status.version, socket.display());
-            println!("Lighting config: {}", status.lighting_config.display());
+            match &status.lighting_config {
+                Some(path) => println!("Lighting config: {}", path.display()),
+                None => println!("Lighting config: none recorded yet"),
+            }
             println!("State file: {}", status.state_file.display());
             if status.restore.is_empty() {
                 println!("Boot restore: nothing recorded");
@@ -48,31 +78,10 @@ pub fn run(action: DaemonAction, socket: &Path) -> CliResult {
                 println!("  pwm{} [{}]: {state}", fan.channel, fan.sensor);
             }
         }
-        DaemonAction::Set(args) => {
-            let request = Request::SetLighting {
-                target: args.target.clone(),
-                rgb: args.color,
-                brightness: args.brightness,
-                calibrated: !args.uncalibrated,
-                execute: args.execute,
-            };
-            let result: LightingResult = ipc::call(socket, &request)?;
-            for target in &result.targets {
-                print_planned(&target.alias, &args, target.output);
-            }
-            if !result.executed {
-                println!("Preview only; add --execute to apply and record for boot restore");
-                return Ok(());
-            }
-            if let Some(error) = &result.persist_error {
-                eprintln!("warning: applied, but not recorded for boot restore: {error}");
-            }
-            report(&result.targets)?;
-        }
         DaemonAction::Restore => {
             let results: Vec<TargetResult> = ipc::call(socket, &Request::RestoreLighting)?;
             if results.is_empty() {
-                println!("Nothing recorded; use `asusio daemon set ... --execute` first");
+                println!("Nothing recorded; run `asusio lighting set ... --execute` first");
             }
             for target in &results {
                 println!("{}: recorded {}", target.alias, hex(target.output));

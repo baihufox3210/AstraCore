@@ -44,11 +44,7 @@ fn run(args: Args) -> io::Result<()> {
     signals::install()?;
 
     let daemon = Arc::new(daemon::Daemon::new(config)?);
-    eprintln!(
-        "asusiod {} started; lighting config {}",
-        env!("CARGO_PKG_VERSION"),
-        daemon.config.lighting_config.display()
-    );
+    eprintln!("asusiod {} started", env!("CARGO_PKG_VERSION"));
     let restore = daemon.config.restore_lighting.then(|| {
         let daemon = daemon.clone();
         thread::spawn(move || daemon.restore_at_startup())

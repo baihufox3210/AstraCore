@@ -1,28 +1,25 @@
-//! Installs or removes the asusiod system integration. Previews by default;
-//! `--execute` writes files (run with sudo). It never runs systemctl or edits groups.
-use asusio_core::{
-    lighting::Store,
-    service::{DEFAULT_CONFIG, DEFAULT_GROUP, ServiceConfig},
-};
+//! Installs or removes asusiod without a package manager. Previews by default;
+//! `--execute` (as root) installs files, loads modules and enables the service.
+use asusio_core::service::DEFAULT_CONFIG;
 use clap::{Parser, Subcommand};
 use std::{
     fs, io,
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
-    process::ExitCode,
+    process::{self, ExitCode},
 };
 
 const UNIT_TEMPLATE: &str = include_str!("../../../packaging/systemd/asusiod.service.in");
 const UNIT_PATH: &str = "/etc/systemd/system/asusiod.service";
 const MODULES_PATH: &str = "/etc/modules-load.d/asusio.conf";
 /// i2c-dev exposes ENE controllers; nct6775 exposes fan PWM channels.
-const MODULES: &str = "i2c-dev\nnct6775\n";
+const MODULES: &str = include_str!("../../../packaging/systemd/asusio-modules.conf");
 
 #[derive(Parser)]
 #[command(
     name = "asusio-helper",
     version,
-    about = "Install the asusiod system service"
+    about = "Install asusiod without a package"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -31,21 +28,15 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Install the unit, daemon configuration, module loading and binaries
+    /// Install binaries, the unit and module loading, then enable the service
     Install {
-        /// The user's lighting configuration, e.g. /home/me/.config/asusio/lighting.json
-        #[arg(long)]
-        lighting_config: PathBuf,
-        /// Group allowed to control lighting through the daemon socket
-        #[arg(long, default_value = DEFAULT_GROUP)]
-        group: String,
         /// Where asusiod and asusio are installed
         #[arg(long, default_value = "/usr/local/bin")]
         bin_dir: PathBuf,
         #[arg(long)]
         execute: bool,
     },
-    /// Remove the unit and module-loading file (keeps configuration and state)
+    /// Disable the service and remove the unit and module file (keeps state)
     Uninstall {
         #[arg(long)]
         execute: bool,
@@ -53,17 +44,9 @@ enum Command {
 }
 
 enum Action {
-    /// Create or replace a file this tool owns.
     Write {
         path: PathBuf,
         content: String,
-        mode: u32,
-    },
-    /// Create only when absent; never overwrite user edits.
-    Create {
-        path: PathBuf,
-        content: String,
-        mode: u32,
     },
     Copy {
         from: PathBuf,
@@ -72,41 +55,31 @@ enum Action {
     Remove {
         path: PathBuf,
     },
+    Run {
+        program: &'static str,
+        args: &'static [&'static str],
+    },
 }
 
 impl Action {
     fn describe(&self) -> String {
         match self {
             Self::Write { path, .. } => format!("write   {}", path.display()),
-            Self::Create { path, .. } if path.exists() => {
-                format!("keep    {} (already exists)", path.display())
-            }
-            Self::Create { path, .. } => format!("create  {}", path.display()),
             Self::Copy { from, to } => format!("install {} -> {}", from.display(), to.display()),
             Self::Remove { path } => format!("remove  {}", path.display()),
+            Self::Run { program, args } => format!("run     {program} {}", args.join(" ")),
         }
     }
 
     fn apply(&self) -> io::Result<()> {
-        let write = |path: &Path, content: &str, mode: u32| -> io::Result<()> {
-            if let Some(parent) = path.parent() {
-                fs::create_dir_all(parent)?;
-            }
-            fs::write(path, content)?;
-            fs::set_permissions(path, fs::Permissions::from_mode(mode))
-        };
         match self {
-            Self::Write {
-                path,
-                content,
-                mode,
-            } => write(path, content, *mode),
-            Self::Create { path, .. } if path.exists() => Ok(()),
-            Self::Create {
-                path,
-                content,
-                mode,
-            } => write(path, content, *mode),
+            Self::Write { path, content } => {
+                if let Some(parent) = path.parent() {
+                    fs::create_dir_all(parent)?;
+                }
+                fs::write(path, content)?;
+                fs::set_permissions(path, fs::Permissions::from_mode(0o644))
+            }
             Self::Copy { from, to } => {
                 if let Some(parent) = to.parent() {
                     fs::create_dir_all(parent)?;
@@ -121,30 +94,31 @@ impl Action {
                 Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
                 result => result,
             },
+            Self::Run { program, args } => {
+                let status = process::Command::new(program).args(*args).status()?;
+                if status.success() {
+                    Ok(())
+                } else {
+                    Err(io::Error::other(format!("{program} failed: {status}")))
+                }
+            }
         }
     }
 }
 
-fn render_unit(bin_dir: &Path, config: &Path) -> String {
+fn render_unit(bin_dir: &Path) -> String {
     UNIT_TEMPLATE
         .replace("@BINDIR@", &bin_dir.display().to_string())
-        .replace("@CONFIG@", &config.display().to_string())
+        .replace("@CONFIG@", DEFAULT_CONFIG)
 }
 
-fn install_actions(lighting_config: &Path, group: &str, bin_dir: &Path) -> io::Result<Vec<Action>> {
-    if !lighting_config.is_absolute() || !bin_dir.is_absolute() {
+fn install_actions(bin_dir: &Path) -> io::Result<Vec<Action>> {
+    if !bin_dir.is_absolute() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "--lighting-config and --bin-dir must be absolute paths",
+            "--bin-dir must be an absolute path",
         ));
     }
-    // Validates schema and host binding before anything is installed.
-    Store::new(lighting_config).load()?;
-    let mut config = ServiceConfig::new(lighting_config);
-    config.client_group = Some(group.to_owned());
-    config.validate()?;
-    let config_json = serde_json::to_string_pretty(&config).map_err(io::Error::other)? + "\n";
-
     let source_dir = std::env::current_exe()?
         .parent()
         .map(Path::to_path_buf)
@@ -164,63 +138,53 @@ fn install_actions(lighting_config: &Path, group: &str, bin_dir: &Path) -> io::R
         });
     }
     actions.extend([
-        Action::Create {
-            path: DEFAULT_CONFIG.into(),
-            content: config_json,
-            mode: 0o644,
-        },
         Action::Write {
             path: UNIT_PATH.into(),
-            content: render_unit(bin_dir, Path::new(DEFAULT_CONFIG)),
-            mode: 0o644,
+            content: render_unit(bin_dir),
         },
-        Action::Create {
+        Action::Write {
             path: MODULES_PATH.into(),
             content: MODULES.to_owned(),
-            mode: 0o644,
+        },
+        Action::Run {
+            program: "modprobe",
+            args: &["-a", "i2c-dev", "nct6775"],
+        },
+        Action::Run {
+            program: "systemctl",
+            args: &["daemon-reload"],
+        },
+        Action::Run {
+            program: "systemctl",
+            args: &["enable", "--now", "asusiod.service"],
         },
     ]);
     Ok(actions)
 }
 
+fn uninstall_actions() -> Vec<Action> {
+    vec![
+        Action::Run {
+            program: "systemctl",
+            args: &["disable", "--now", "asusiod.service"],
+        },
+        Action::Remove {
+            path: UNIT_PATH.into(),
+        },
+        Action::Remove {
+            path: MODULES_PATH.into(),
+        },
+        Action::Run {
+            program: "systemctl",
+            args: &["daemon-reload"],
+        },
+    ]
+}
+
 fn run(cli: Cli) -> io::Result<()> {
-    let (actions, execute, next_steps) = match cli.command {
-        Command::Install {
-            lighting_config,
-            group,
-            bin_dir,
-            execute,
-        } => {
-            let user = std::env::var("SUDO_USER").unwrap_or_else(|_| "$USER".to_owned());
-            (
-                install_actions(&lighting_config, &group, &bin_dir)?,
-                execute,
-                vec![
-                    format!("sudo groupadd -r {group}   # if the group does not exist"),
-                    format!("sudo usermod -aG {group} {user}   # then log out and back in"),
-                    "sudo systemctl daemon-reload".to_owned(),
-                    "sudo systemctl enable --now asusiod".to_owned(),
-                    "asusio daemon set all <RRGGBB> --execute   # recorded for boot restore"
-                        .to_owned(),
-                ],
-            )
-        }
-        Command::Uninstall { execute } => (
-            vec![
-                Action::Remove {
-                    path: UNIT_PATH.into(),
-                },
-                Action::Remove {
-                    path: MODULES_PATH.into(),
-                },
-            ],
-            execute,
-            vec![
-                "sudo systemctl disable --now asusiod   # before removing the unit".to_owned(),
-                "sudo systemctl daemon-reload".to_owned(),
-                format!("kept: {DEFAULT_CONFIG}, /var/lib/asusio (remove manually if unwanted)"),
-            ],
-        ),
+    let (actions, execute) = match cli.command {
+        Command::Install { bin_dir, execute } => (install_actions(&bin_dir)?, execute),
+        Command::Uninstall { execute } => (uninstall_actions(), execute),
     };
     for action in &actions {
         println!("{}", action.describe());
@@ -228,12 +192,10 @@ fn run(cli: Cli) -> io::Result<()> {
             action.apply()?;
         }
     }
-    if !execute {
+    if execute {
+        println!("Done. Set lighting once with: asusio lighting set all <RRGGBB> --execute");
+    } else {
         println!("Preview only; add --execute (with sudo) to apply");
-    }
-    println!("\nNext steps:");
-    for step in next_steps {
-        println!("  {step}");
     }
     Ok(())
 }
@@ -254,11 +216,12 @@ mod tests {
 
     #[test]
     fn unit_template_is_fully_rendered() {
-        let unit = render_unit(Path::new("/usr/local/bin"), Path::new(DEFAULT_CONFIG));
+        let unit = render_unit(Path::new("/usr/local/bin"));
         assert!(!unit.contains('@'));
         assert!(
             unit.contains("ExecStart=/usr/local/bin/asusiod --config /etc/asusio/asusiod.json")
         );
         assert!(unit.contains("--release-fans"));
+        assert_eq!(MODULES, "i2c-dev\nnct6775\n");
     }
 }

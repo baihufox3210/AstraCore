@@ -61,7 +61,7 @@ pub enum Commands {
         json: bool,
     },
 
-    /// Talk to the asusiod system service (boot restore, fan curves)
+    /// Inspect the asusiod system service (boot restore, fan curves)
     Daemon {
         #[arg(long, global = true, default_value = asusio_core::service::DEFAULT_SOCKET)]
         socket: PathBuf,
@@ -132,7 +132,8 @@ pub enum ManagedAction {
     },
 }
 
-/// A named lighting request; shared by `lighting set` and `daemon set`.
+/// A named lighting request. With `--execute`, it goes through asusiod when that is
+/// running (no sudo; recorded for boot restore), otherwise directly to hardware.
 #[derive(Args)]
 pub struct SetArgs {
     /// Configured alias, or `all`
@@ -146,6 +147,9 @@ pub struct SetArgs {
     pub uncalibrated: bool,
     #[arg(long)]
     pub execute: bool,
+    /// Write hardware directly even when asusiod is running (not recorded for boot)
+    #[arg(long)]
+    pub direct: bool,
 }
 
 /// Requests to the asusiod system service; no sudo needed for members of its group.
@@ -156,8 +160,6 @@ pub enum DaemonAction {
         #[arg(long)]
         json: bool,
     },
-    /// Preview or set lighting through the daemon; executed requests are restored at boot
-    Set(SetArgs),
     /// Reapply the recorded lighting now (e.g. after logging in)
     Restore,
 }

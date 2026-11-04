@@ -20,7 +20,9 @@ const CLIENT_TIMEOUT: Duration = Duration::from_secs(120);
 pub enum Request {
     Status,
     /// Preview (or, with `execute`, apply and record) a lighting request.
+    /// `lighting_config` must be an absolute path owned by the requesting user.
     SetLighting {
+        lighting_config: PathBuf,
         target: String,
         rgb: Rgb,
         brightness: u8,
@@ -110,7 +112,8 @@ pub struct FanStatus {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Status {
     pub version: String,
-    pub lighting_config: PathBuf,
+    /// Configuration used for boot restore, once lighting has been recorded.
+    pub lighting_config: Option<PathBuf>,
     pub state_file: PathBuf,
     pub restore: Vec<RestoreEntry>,
     pub fans: Vec<FanStatus>,
@@ -154,6 +157,12 @@ pub fn write_response(writer: impl Write, response: &Response) -> io::Result<()>
     write_line(writer, response)
 }
 
+/// Whether a daemon socket exists at `socket` (without connecting).
+pub fn available(socket: &Path) -> bool {
+    use std::os::unix::fs::FileTypeExt;
+    std::fs::metadata(socket).is_ok_and(|metadata| metadata.file_type().is_socket())
+}
+
 /// Client side: send `request` and decode the response data.
 pub fn call<T: DeserializeOwned>(socket: &Path, request: &Request) -> io::Result<T> {
     let mut stream = UnixStream::connect(socket).map_err(|error| {
@@ -181,6 +190,7 @@ mod tests {
     #[test]
     fn request_wire_format_and_operations() {
         let request = Request::SetLighting {
+            lighting_config: "/home/u/.config/asusio/lighting.json".into(),
             target: "all".into(),
             rgb: [1, 2, 3],
             brightness: 50,
@@ -189,7 +199,7 @@ mod tests {
         };
         let mut wire = Vec::new();
         write_line(&mut wire, &request).unwrap();
-        assert!(wire.starts_with(br#"{"method":"set_lighting","target":"all""#));
+        assert!(wire.starts_with(br#"{"method":"set_lighting","lighting_config":"#));
         assert_eq!(read_request(wire.as_slice()).unwrap(), request);
         assert_eq!(request.operation(), Operation::PreviewLighting);
         assert_eq!(

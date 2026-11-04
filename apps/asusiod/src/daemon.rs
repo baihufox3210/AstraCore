@@ -1,7 +1,7 @@
 //! Shared daemon state and lighting operations.
 use crate::signals;
 use asusio_core::{
-    lighting::{self, Request, Store},
+    lighting::{self, Config, Request},
     service::{
         LightingState, ServiceConfig, State,
         ipc::{FanStatus, LightingResult, RestoreEntry, Status, TargetResult},
@@ -10,6 +10,9 @@ use asusio_core::{
 use asusio_policy::Policy;
 use std::{
     fs, io,
+    io::Read,
+    os::unix::fs::{MetadataExt, OpenOptionsExt},
+    path::{Path, PathBuf},
     sync::{Mutex, MutexGuard},
     time::{Duration, Instant},
 };
@@ -38,20 +41,15 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 /// Resolve a group name from /etc/group.
-fn group_id(name: &str) -> io::Result<u32> {
-    fs::read_to_string("/etc/group")?
+fn group_id(name: &str) -> Option<u32> {
+    fs::read_to_string("/etc/group")
+        .ok()?
         .lines()
         .find_map(|line| {
             let mut fields = line.split(':');
             (fields.next() == Some(name))
                 .then(|| fields.nth(1).and_then(|gid| gid.parse().ok()))
                 .flatten()
-        })
-        .ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::NotFound,
-                format!("group {name} not found; create it with: groupadd -r {name}"),
-            )
         })
 }
 
@@ -61,12 +59,44 @@ fn effective_uid() -> u32 {
     unsafe { libc::geteuid() }
 }
 
+/// Read a lighting configuration on behalf of `owner` (`None` = root, any owner).
+/// The file must be a regular, non-symlink file owned by that user, so a client
+/// cannot make the root daemon read files it does not own.
+fn read_config(path: &Path, owner: Option<u32>) -> io::Result<Config> {
+    if !path.is_absolute() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "lighting configuration path must be absolute",
+        ));
+    }
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() || owner.is_some_and(|uid| metadata.uid() != uid) {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "lighting configuration must be a regular file owned by the requesting user",
+        ));
+    }
+    let mut bytes = Vec::new();
+    file.take(1024 * 1024).read_to_end(&mut bytes)?;
+    Config::from_json(&bytes)
+}
+
 impl Daemon {
     pub fn new(config: ServiceConfig) -> io::Result<Self> {
-        let client_gid = config.client_group.as_deref().map(group_id).transpose()?;
+        let client_gid = config.client_group.as_deref().and_then(|name| {
+            let gid = group_id(name);
+            if gid.is_none() {
+                eprintln!("group {name} not found; group-based access disabled");
+            }
+            gid
+        });
         let state = State::load(&config.state_file)?;
         Ok(Self {
-            policy: Policy::new(effective_uid(), client_gid),
+            policy: Policy::new(effective_uid(), client_gid, config.allow_active_sessions),
             client_gid,
             hardware: Mutex::new(()),
             state: Mutex::new(state),
@@ -76,24 +106,28 @@ impl Daemon {
         })
     }
 
-    fn store(&self) -> Store {
-        Store::new(&self.config.lighting_config)
-    }
-
     pub fn status(&self) -> Status {
         Status {
             version: env!("CARGO_PKG_VERSION").to_owned(),
-            lighting_config: self.config.lighting_config.clone(),
+            lighting_config: lock(&self.state).lighting_config.clone(),
             state_file: self.config.state_file.clone(),
             restore: lock(&self.restore).clone(),
             fans: lock(&self.fans).clone(),
         }
     }
 
-    /// Plan, and with `execute` apply and record, one lighting request.
-    pub fn set_lighting(&self, request: &Request, execute: bool) -> io::Result<LightingResult> {
+    /// Plan, and with `execute` apply and record, one lighting request from `caller`.
+    pub fn set_lighting(
+        &self,
+        lighting_config: PathBuf,
+        caller: u32,
+        request: &Request,
+        execute: bool,
+    ) -> io::Result<LightingResult> {
+        let owner = (caller != 0).then_some(caller);
+        let config = read_config(&lighting_config, owner)?;
         let _hardware = lock(&self.hardware);
-        let plan = self.store().plan(request)?;
+        let plan = lighting::plan(&config, request)?;
         let mut targets: Vec<_> = plan
             .iter()
             .map(|target| TargetResult {
@@ -109,13 +143,18 @@ impl Daemon {
                 persist_error: None,
             });
         }
-        let desired = LightingState::from(request);
         for (target, outcome) in targets.iter_mut().zip(lighting::execute(plan)) {
             target.error = outcome.result.err().map(|error| error.to_string());
         }
         // Record the desired state even for failed targets so boot restore retries them.
         let persist_error = {
             let mut state = lock(&self.state);
+            if state.lighting_config.as_ref() != Some(&lighting_config) {
+                state.lighting.clear();
+            }
+            state.lighting_config = Some(lighting_config);
+            state.config_owner = owner;
+            let desired = LightingState::from(request);
             for target in &targets {
                 state.lighting.insert(target.alias.clone(), desired);
             }
@@ -131,22 +170,33 @@ impl Daemon {
 
     /// Reapply one alias from the latest recorded state.
     fn restore_one(&self, alias: &str) -> io::Result<()> {
-        let desired = lock(&self.state).lighting.get(alias).copied();
-        let Some(desired) = desired else {
+        let (path, owner, desired) = {
+            let state = lock(&self.state);
+            (
+                state.lighting_config.clone(),
+                state.config_owner,
+                state.lighting.get(alias).copied(),
+            )
+        };
+        let (Some(path), Some(desired)) = (path, desired) else {
             return Ok(());
         };
+        let config = read_config(&path, owner)?;
         let _hardware = lock(&self.hardware);
-        let plan = self.store().plan(&desired.request(alias))?;
+        let plan = lighting::plan(&config, &desired.request(alias))?;
         for outcome in lighting::execute(plan) {
             outcome.result?;
         }
         Ok(())
     }
 
+    fn recorded_aliases(&self) -> Vec<String> {
+        lock(&self.state).lighting.keys().cloned().collect()
+    }
+
     /// Reapply every recorded alias once, now.
     pub fn restore_now(&self) -> Vec<TargetResult> {
-        let aliases: Vec<_> = lock(&self.state).lighting.keys().cloned().collect();
-        aliases
+        self.recorded_aliases()
             .into_iter()
             .map(|alias| {
                 let error = self
@@ -165,7 +215,7 @@ impl Daemon {
 
     /// Boot restore: retry targets that are not ready yet, within a bounded window.
     pub fn restore_at_startup(&self) {
-        let aliases: Vec<_> = lock(&self.state).lighting.keys().cloned().collect();
+        let aliases = self.recorded_aliases();
         if aliases.is_empty() {
             eprintln!("restore: no recorded lighting state");
             return;

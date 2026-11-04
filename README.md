@@ -315,36 +315,40 @@ LED count cannot be distinguished by this protocol alone.
 
 ## System service: boot restore and fan curves
 
-`asusiod` is a root system service. It reapplies recorded lighting at boot, runs
-optional fan curves, and lets members of the `asusio` group control lighting
-through `/run/asusio/asusiod.sock` (mode `0660`) without sudo.
+`asusiod` is a root system service. It reapplies your last lighting at boot,
+runs optional fan curves, and lets locally logged-in users control lighting
+without sudo. On Arch Linux, installation takes two commands:
 
 ```bash
-cargo build --release --workspace
-./target/release/asusio-helper install --lighting-config "$HOME/.config/asusio/lighting.json"
-sudo ./target/release/asusio-helper install --lighting-config "$HOME/.config/asusio/lighting.json" --execute
-sudo groupadd -r asusio && sudo usermod -aG asusio "$USER"   # then log out and back in
-sudo systemctl daemon-reload && sudo systemctl enable --now asusiod
-asusio daemon set all 80C0FF                # preview through the daemon
-asusio daemon set all 80C0FF --execute      # apply and record for boot restore
-asusio daemon status
+cd packaging/arch && makepkg -si           # build, test, install and start asusiod
+asusio lighting set all 80C0FF --execute   # as your user; restored at every boot
 ```
 
-The helper previews by default. With `--execute` it installs `asusiod` and
-`asusio` into `/usr/local/bin`, writes the unit, and creates
-`/etc/asusio/asusiod.json` and `/etc/modules-load.d/asusio.conf` (`i2c-dev`,
-`nct6775`) only when they are absent. It never runs `systemctl` or edits groups.
-`asusio-helper uninstall [--execute]` removes the unit and module file, but
-keeps the configuration and state.
+The package installs to `/usr/bin` and loads `i2c-dev` and `nct6775` at boot
+(and immediately). It enables and starts `asusiod.service`. `pacman -R asusio`
+stops and removes it, but keeps `/var/lib/asusio`. Without pacman, run
+`cargo build --release --workspace`, then
+`sudo ./target/release/asusio-helper install --execute`. The helper does the
+same into `/usr/local/bin`. Without `--execute`, it only previews.
 
-**Boot restore.** Only `asusio daemon set ... --execute` records state, in
-`/var/lib/asusio/state.json`. Direct `lighting set` writes are not recorded. The
-recorded value is the requested color, brightness and calibration flag, so a
-later `lighting calibrate` takes effect on the next restore. At startup, targets
-that are not ready yet are retried every 10 seconds for 10 minutes. The screen
-needs this, because its lianli-daemon socket only appears after login.
-`asusio daemon restore` reapplies the recorded state immediately. Desired state is
-recorded even when a target fails, so a later restore retries it.
+**How it works.** While asusiod is running, `lighting set --execute` goes through
+its socket, `/run/asusio/asusiod.sock`. The output is labeled "via asusiod",
+and no sudo is needed. The daemon records the request in
+`/var/lib/asusio/state.json` with the path of your `lighting.json`. The
+recorded fields are the requested color, brightness and calibration flag, so a
+later `lighting calibrate` applies on the next restore. The configuration must
+be a regular file owned by the requesting user, so the root daemon never reads
+files on another user's behalf. `--direct` writes hardware without the daemon,
+and that write is not recorded. At boot, targets that are not ready are retried
+every 10 seconds for 10 minutes. The screen needs this, because its
+lianli-daemon socket appears only after login. `asusio daemon status` shows
+progress, and `asusio daemon restore` reapplies the recorded lighting now.
+
+`/etc/asusio/asusiod.json` is optional; a missing file means defaults:
+
+```json
+{"allow_active_sessions": true, "client_group": "asusio", "restore_lighting": true, "fan_curves": []}
+```
 
 **Fan curves** are configured only in the root-owned `/etc/asusio/asusiod.json`
 and never through the socket. The list is empty by default, because the
@@ -368,9 +372,11 @@ stop, or a crash returns the channel to firmware control: `ExecStopPost` runs
 `asusiod --release-fans`, and panics abort the process. A released curve stays
 off until the daemon restarts. Restart the service after editing the file.
 
-**Access control.** The socket mode is the first gate. Each request is then
-checked by `asusio-policy` against `SO_PEERCRED` credentials: root, the
-daemon's user, and members of `client_group` are allowed. Previews and status do
+**Access control.** Each request is checked by `asusio-policy` against
+`SO_PEERCRED` credentials. Root, the daemon's user, members of `client_group`, and
+users with an active local logind session (like udev `uaccess`) are allowed. On
+a shared machine, set `"allow_active_sessions": false`; the socket then becomes
+`0660 root:asusio`, and only group members are allowed. Previews and status do
 not write hardware. The IPC protocol (`asusio_core::service::ipc`) is
 newline-delimited JSON with one request per connection.
 

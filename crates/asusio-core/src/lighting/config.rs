@@ -98,6 +98,14 @@ pub fn config_path(explicit: Option<PathBuf>) -> io::Result<PathBuf> {
     Ok(PathBuf::from(home).join(".config/asusio/lighting.json"))
 }
 impl Config {
+    /// Parse an installed configuration and validate it against this host.
+    pub fn from_json(bytes: &[u8]) -> io::Result<Self> {
+        let config: Self =
+            serde_json::from_slice(bytes).map_err(|error| invalid(error.to_string()))?;
+        config.validate(&host()?, false)?;
+        Ok(config)
+    }
+
     pub fn validate(&self, expected_host: &str, allow_unbound: bool) -> io::Result<()> {
         if self.schema_version != 1 {
             return Err(invalid("unsupported lighting configuration schema"));
@@ -155,10 +163,8 @@ impl Config {
     }
 }
 pub(crate) fn load(path: &Path) -> io::Result<Config> {
-    let config: Config = serde_json::from_slice(&fs::read(path)?)
-        .map_err(|error| invalid(format!("{}: {error}", path.display())))?;
-    config.validate(&host()?, false)?;
-    Ok(config)
+    Config::from_json(&fs::read(path)?)
+        .map_err(|error| io::Error::new(error.kind(), format!("{}: {error}", path.display())))
 }
 pub(crate) fn save(path: &Path, config: &Config, replace: bool) -> io::Result<()> {
     crate::persist::write_json(path, config, replace)

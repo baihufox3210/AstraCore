@@ -1,0 +1,59 @@
+# Local package built from this repository's working tree:
+#   cd packaging/arch && makepkg -si
+pkgname=asusio
+pkgver=0.1.0.r10.gfc2804c
+pkgrel=1
+pkgdesc="ASUS hardware I/O framework for Linux: native lighting, fan curves and the asusiod service"
+arch=('x86_64')
+url="https://github.com/baihu/asusio"
+license=('MIT')
+depends=('gcc-libs' 'glibc')
+makedepends=('cargo')
+install=asusio.install
+options=('!lto' '!debug')
+
+_repo="$(realpath "$startdir/../..")"
+
+pkgver() {
+    local version
+    version=$(sed -n 's/^version = "\(.*\)"/\1/p' "$_repo/Cargo.toml" | head -1)
+    if git -C "$_repo" rev-parse --git-dir >/dev/null 2>&1; then
+        printf '%s.r%s.g%s' "$version" \
+            "$(git -C "$_repo" rev-list --count HEAD)" \
+            "$(git -C "$_repo" rev-parse --short HEAD)"
+    else
+        printf '%s' "$version"
+    fi
+}
+
+prepare() {
+    cd "$_repo"
+    cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+build() {
+    cd "$_repo"
+    export CARGO_TARGET_DIR="$srcdir/target"
+    cargo build --frozen --release -p asusio -p asusiod -p asusio-helper
+}
+
+check() {
+    cd "$_repo"
+    export CARGO_TARGET_DIR="$srcdir/target"
+    cargo test --frozen --release --workspace
+}
+
+package() {
+    local release="$srcdir/target/release"
+    install -Dm755 "$release/asusio" "$release/asusiod" "$release/asusio-helper" -t "$pkgdir/usr/bin/"
+
+    cd "$_repo/packaging/systemd"
+    sed -e 's|@BINDIR@|/usr/bin|g' -e 's|@CONFIG@|/etc/asusio/asusiod.json|g' asusiod.service.in |
+        install -Dm644 /dev/stdin "$pkgdir/usr/lib/systemd/system/asusiod.service"
+    install -Dm644 asusio.sysusers "$pkgdir/usr/lib/sysusers.d/asusio.conf"
+    install -Dm644 asusio-modules.conf "$pkgdir/usr/lib/modules-load.d/asusio.conf"
+
+    cd "$_repo"
+    install -Dm644 LICENSE -t "$pkgdir/usr/share/licenses/$pkgname/"
+    install -Dm644 README.md -t "$pkgdir/usr/share/doc/$pkgname/"
+}

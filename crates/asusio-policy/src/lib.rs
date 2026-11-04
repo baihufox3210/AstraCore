@@ -10,6 +10,8 @@ pub struct Caller {
     pub uid: u32,
     /// Primary and supplementary group IDs.
     pub groups: Vec<u32>,
+    /// The user has an active local login session (as tracked by systemd-logind).
+    pub active_session: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -49,7 +51,7 @@ impl fmt::Display for Denied {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "uid {} is not allowed to {}; add the user to the daemon's client group",
+            "uid {} is not allowed to {}; log in locally or join the daemon's client group",
             self.uid,
             self.operation.describe()
         )
@@ -58,19 +60,22 @@ impl fmt::Display for Denied {
 
 impl std::error::Error for Denied {}
 
-/// Root and the daemon's own user may do everything. Members of the client group may
-/// read status and control lighting. Without a client group, nobody else is allowed.
+/// Root and the daemon's own user may do everything. Members of the client group, and,
+/// when enabled, users with an active local session (like udev `uaccess`), may read
+/// status and control lighting. Everyone else is denied.
 #[derive(Debug, Clone)]
 pub struct Policy {
     owner_uid: u32,
     client_gid: Option<u32>,
+    allow_active_sessions: bool,
 }
 
 impl Policy {
-    pub fn new(owner_uid: u32, client_gid: Option<u32>) -> Self {
+    pub fn new(owner_uid: u32, client_gid: Option<u32>, allow_active_sessions: bool) -> Self {
         Self {
             owner_uid,
             client_gid,
+            allow_active_sessions,
         }
     }
 
@@ -79,7 +84,8 @@ impl Policy {
         let member = self
             .client_gid
             .is_some_and(|gid| caller.groups.contains(&gid));
-        if trusted || member {
+        let seated = self.allow_active_sessions && caller.active_session;
+        if trusted || member || seated {
             Ok(())
         } else {
             Err(Denied {
@@ -98,12 +104,36 @@ mod tests {
         Caller {
             uid,
             groups: groups.to_vec(),
+            active_session: false,
         }
     }
 
     #[test]
+    fn active_local_sessions_are_allowed_only_when_enabled() {
+        let seated = Caller {
+            active_session: true,
+            ..caller(1000, &[1000])
+        };
+        assert!(
+            Policy::new(0, None, true)
+                .authorize(&seated, Operation::SetLighting)
+                .is_ok()
+        );
+        assert!(
+            Policy::new(0, None, false)
+                .authorize(&seated, Operation::SetLighting)
+                .is_err()
+        );
+        assert!(
+            Policy::new(0, None, true)
+                .authorize(&caller(1000, &[1000]), Operation::SetLighting)
+                .is_err()
+        );
+    }
+
+    #[test]
     fn root_owner_and_group_members_are_allowed() {
-        let policy = Policy::new(0, Some(963));
+        let policy = Policy::new(0, Some(963), false);
         assert!(
             policy
                 .authorize(&caller(0, &[0]), Operation::SetLighting)
@@ -124,7 +154,7 @@ mod tests {
 
     #[test]
     fn without_a_client_group_only_trusted_users_are_allowed() {
-        let policy = Policy::new(1000, None);
+        let policy = Policy::new(1000, None, false);
         assert!(
             policy
                 .authorize(&caller(1000, &[1000]), Operation::SetLighting)

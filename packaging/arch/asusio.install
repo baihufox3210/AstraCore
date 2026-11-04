@@ -1,0 +1,19 @@
+# pacman runs its sysusers/daemon-reload hooks after these scriptlets, so do the
+# minimum needed here to start asusiod immediately.
+post_install() {
+    systemd-sysusers asusio.conf
+    modprobe -a i2c-dev nct6775 || true
+    systemctl daemon-reload
+    systemctl enable --now asusiod.service
+    echo "==> asusio: run once as your user: asusio lighting set all <RRGGBB> --execute"
+    echo "    (no sudo needed; the color is then restored at every boot)"
+}
+
+post_upgrade() {
+    systemctl daemon-reload
+    systemctl try-restart asusiod.service
+}
+
+pre_remove() {
+    systemctl disable --now asusiod.service
+}

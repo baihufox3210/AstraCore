@@ -35,17 +35,19 @@ fn schema_v1() -> u32 {
     1
 }
 
-/// Root-owned daemon configuration. Fan curves are only accepted from this file,
-/// never over the socket.
+/// Optional root-owned daemon configuration; a missing file means all defaults.
+/// Fan curves are only accepted from this file, never over the socket.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ServiceConfig {
+    #[serde(default = "schema_v1")]
     pub schema_version: u32,
-    /// Host-local lighting configuration (normally the user's `lighting.json`).
-    pub lighting_config: PathBuf,
-    /// Group whose members may control lighting through the socket.
-    #[serde(default)]
+    /// Group whose members may control lighting. Ignored if the group does not exist.
+    #[serde(default = "default_group")]
     pub client_group: Option<String>,
+    /// Let users with an active local login session control lighting (like udev uaccess).
+    #[serde(default = "default_true")]
+    pub allow_active_sessions: bool,
     #[serde(default = "default_socket")]
     pub socket: PathBuf,
     #[serde(default = "default_state")]
@@ -59,13 +61,16 @@ pub struct ServiceConfig {
     pub fan_interval_ms: u64,
 }
 
-impl ServiceConfig {
-    /// A configuration with defaults and no fan curves.
-    pub fn new(lighting_config: impl Into<PathBuf>) -> Self {
+fn default_group() -> Option<String> {
+    Some(DEFAULT_GROUP.to_owned())
+}
+
+impl Default for ServiceConfig {
+    fn default() -> Self {
         Self {
             schema_version: 1,
-            lighting_config: lighting_config.into(),
-            client_group: Some(DEFAULT_GROUP.to_owned()),
+            client_group: default_group(),
+            allow_active_sessions: true,
             socket: default_socket(),
             state_file: default_state(),
             restore_lighting: true,
@@ -73,9 +78,17 @@ impl ServiceConfig {
             fan_interval_ms: default_interval(),
         }
     }
+}
 
+impl ServiceConfig {
+    /// Load and validate; a missing file yields the defaults.
     pub fn load(path: &Path) -> io::Result<Self> {
-        let config: Self = serde_json::from_slice(&fs::read(path)?)
+        let bytes = match fs::read(path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Self::default()),
+            Err(error) => return Err(error),
+        };
+        let config: Self = serde_json::from_slice(&bytes)
             .map_err(|error| invalid(format!("{}: {error}", path.display())))?;
         config.validate()?;
         Ok(config)
@@ -85,11 +98,7 @@ impl ServiceConfig {
         if self.schema_version != 1 {
             return Err(invalid("unsupported asusiod configuration schema"));
         }
-        for (name, path) in [
-            ("lighting_config", &self.lighting_config),
-            ("socket", &self.socket),
-            ("state_file", &self.state_file),
-        ] {
+        for (name, path) in [("socket", &self.socket), ("state_file", &self.state_file)] {
             if !path.is_absolute() {
                 return Err(invalid(format!("{name} must be an absolute path")));
             }
@@ -151,6 +160,12 @@ impl LightingState {
 pub struct State {
     #[serde(default = "schema_v1")]
     pub schema_version: u32,
+    /// The lighting configuration the recorded aliases refer to.
+    #[serde(default)]
+    pub lighting_config: Option<PathBuf>,
+    /// Owner the configuration must still belong to at restore time (`None` for root).
+    #[serde(default)]
+    pub config_owner: Option<u32>,
     #[serde(default)]
     pub lighting: BTreeMap<String, LightingState>,
 }
@@ -186,15 +201,17 @@ mod tests {
 
     #[test]
     fn config_defaults_and_validation() {
-        let config: ServiceConfig = serde_json::from_value(serde_json::json!({
-            "schema_version": 1,
-            "lighting_config": "/home/user/.config/asusio/lighting.json"
-        }))
-        .unwrap();
+        let missing = Path::new("/nonexistent/asusiod.json");
+        let config = ServiceConfig::load(missing).unwrap();
         config.validate().unwrap();
         assert_eq!(config.socket, Path::new(DEFAULT_SOCKET));
-        assert!(config.restore_lighting && config.fan_curves.is_empty());
-        assert_eq!(config.client_group, None);
+        assert!(config.restore_lighting && config.allow_active_sessions);
+        assert!(config.fan_curves.is_empty());
+        assert_eq!(config.client_group.as_deref(), Some(DEFAULT_GROUP));
+
+        let parsed: ServiceConfig =
+            serde_json::from_value(serde_json::json!({"allow_active_sessions": false})).unwrap();
+        assert!(!parsed.allow_active_sessions && parsed.schema_version == 1);
 
         let mut relative = config.clone();
         relative.state_file = "state.json".into();
@@ -208,7 +225,6 @@ mod tests {
         let mut duplicate = config.clone();
         duplicate.fan_curves = vec![curve.clone(), curve];
         assert!(duplicate.validate().is_err());
-        assert!(ServiceConfig::new("/a/lighting.json").validate().is_ok());
     }
 
     #[test]

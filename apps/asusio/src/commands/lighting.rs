@@ -3,7 +3,10 @@ use crate::{
     cli::{ManagedAction, SetArgs},
     output::CliResult,
 };
-use asusio_core::lighting::{self, Config, Request, Store, hex};
+use asusio_core::{
+    lighting::{self, Config, Request, Store, hex},
+    service::{DEFAULT_SOCKET, ipc},
+};
 use asusio_types::Rgb;
 
 impl SetArgs {
@@ -45,7 +48,10 @@ pub fn report_outcomes<'a>(
     }
     Ok(())
 }
-use std::{fs, io, path::PathBuf};
+use std::{
+    fs, io,
+    path::{Path, PathBuf},
+};
 
 pub fn run(action: ManagedAction, config: Option<PathBuf>) -> CliResult {
     let store = Store::open(config)?;
@@ -79,6 +85,10 @@ pub fn run(action: ManagedAction, config: Option<PathBuf>) -> CliResult {
             );
         }
         ManagedAction::Set(args) => {
+            let socket = Path::new(DEFAULT_SOCKET);
+            if !args.direct && ipc::available(socket) {
+                return super::daemon::set(socket, store.path(), &args);
+            }
             let plan = store.plan(&args.request())?;
             for item in &plan {
                 print_planned(item.alias(), &args, item.output());
@@ -86,6 +96,11 @@ pub fn run(action: ManagedAction, config: Option<PathBuf>) -> CliResult {
             if !args.execute {
                 println!("Preview only; add --execute to apply. Config: {path}");
                 return Ok(());
+            }
+            if ipc::available(socket) {
+                println!("Writing directly; not recorded for boot restore");
+            } else {
+                println!("asusiod is not running; not recorded for boot restore");
             }
             let outcomes = lighting::execute(plan);
             report_outcomes(outcomes.iter().map(|outcome| {
