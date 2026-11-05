@@ -397,9 +397,9 @@ reported as unsupported; nothing is written. Without a recorded profile, the dae
 leaves CPU settings untouched at boot. A failed CPU write leaves fans and the
 recorded profile unchanged.
 
-**Fan presets** are named curve sets in `/etc/asusio/asusiod.json`, validated like
-`fan_curves` (30% minimum, ending at 100%). Clients can only select a name; curves
-cannot be sent over the socket. A profile whose preset is not defined uses the
+**Fan presets** are named curve sets, from two places: the root-owned
+`/etc/asusio/asusiod.json` (below) and presets saved through asusiod (next section),
+which replace configuration presets of the same name. A profile whose preset is not defined uses the
 default `fan_curves`, which are empty by default, so fans stay under firmware
 control; `profile list` and the status `fan` object say so explicitly (`firmware:
 true` and a `note`). Switching presets first returns every running channel to
@@ -491,9 +491,9 @@ progress, and `asusio daemon restore` reapplies the recorded lighting now.
 {"allow_active_sessions": true, "client_group": "asusio", "restore_lighting": true, "fan_curves": [], "fan_presets": {}}
 ```
 
-**Fan curves** are configured only in the root-owned `/etc/asusio/asusiod.json`
-and never through the socket. The list is empty by default, because the
-PWM-to-header mapping has not been verified. Example:
+**Fan curves** in the root-owned `/etc/asusio/asusiod.json` are the administrator's
+defaults and are not restricted beyond the validation below. The list is empty by
+default. Example:
 
 ```json
 "fan_curves": [{
@@ -521,9 +521,52 @@ a shared machine, set `"allow_active_sessions": false`; the socket then becomes
 not write hardware. The IPC protocol (`asusio_core::service::ipc`) is
 newline-delimited JSON with one request per connection. Methods: `status`,
 `set_lighting`, `set_sync`, `set_lighting_mode`, `get_lighting`, `restore_lighting`,
-`get_profiles`, `set_profile` and `telemetry`.
+`get_profiles`, `set_profile`, `telemetry`, `get_fans`, `set_fan_preset` and `delete_fan_preset`.
 Setting a profile (`set_profile` with `execute`) is a hardware write and is
 authorized like lighting writes.
+
+### Saving fan curves without authentication
+
+Any user the policy allows (root, the daemon's user, the client group, or an active local
+session, like lighting and CPU profiles) can save fan presets through asusiod. There is
+no password step: saving a preset that the active profile uses changes the running
+curves within one fan interval (2 seconds by default), and the preset is stored in the
+daemon's state file for the next boot.
+
+```bash
+asusio fans presets                                       # channels, presets, limits
+asusio fans preset set silent --curve 2=40:30,60:45,80:100 --curve 4=45:30,85:100
+asusio fans preset set silent --curve 2=40:30,60:45,80:100 --execute
+asusio fans preset delete silent --execute
+```
+
+`--curve` is `PWM=TEMP:PERCENT,...` for the CPU temperature. Names are 1-32 characters of
+`a-z`, `0-9`, `-` and `_`. The built-in profiles select `silent` and `performance`;
+`custom` can select any name (`asusio profile set custom --fan-preset NAME`); balanced
+keeps firmware control. IPC methods: `get_fans`, `set_fan_preset`, `delete_fan_preset`.
+
+Because the socket is open to local sessions, curves that arrive over it are held to
+stricter rules than the root configuration, so a bad or hostile curve cannot starve the
+machine of cooling:
+
+| Rule | Why |
+|---|---|
+| Follows `k10temp/Tctl` only | Another sensor could stay cold (an unconnected input reads a constant low value) and pin a fan at its minimum |
+| Duty 30-100%, at least two points, at most 16, ending at 100% | The existing curve rules, plus a size limit |
+| Reaches 100% by 85 °C | The existing rule only required the last point to be 100%, which could sit at 150 °C |
+| Only PWM outputs of fan headers named by the board profile | Pumps are excluded and an unknown board gets no editing at all, because pumps could not be told apart |
+| At most 16 saved presets | Bounds the state file |
+| One curve per PWM output | `pwm2` drives CPU_OPT and CHA_FAN3 together, so a curve on it moves both |
+
+**Over-temperature guard.** Independently of any curve, asusiod reads the CPU temperature
+every interval. At 90 °C or above, or when it cannot be read, every curve channel is
+handed back to firmware; the curves resume once the temperature is at or below 80 °C.
+`fans presets` and the IPC `get_fans` report `thermal_hold`. A saved curve cannot turn
+the guard off.
+
+A rejected preset changes nothing. `--release-fans` (run by `ExecStopPost` after any exit
+or crash) releases the channels of the configuration, of every saved preset and of every
+fan header of the board profile, so a crash cannot leave a fan at a manual duty.
 
 ## Library architecture and integration
 

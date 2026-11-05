@@ -11,16 +11,11 @@ use asusio_discovery::sysfs;
 use std::{io, path::Path};
 
 impl Daemon {
-    fn resolve(&self, mode: Mode, custom: Option<&Custom>) -> io::Result<Profile> {
-        cpu_profile::resolve(
-            mode,
-            custom,
-            &self.config.fan_presets,
-            &self.config.fan_curves,
-        )
+    pub(crate) fn resolve(&self, mode: Mode, custom: Option<&Custom>) -> io::Result<Profile> {
+        cpu_profile::resolve(mode, custom, &self.presets(), &self.config.fan_curves)
     }
 
-    fn recorded_profile(&self) -> Option<ProfileState> {
+    pub(crate) fn recorded_profile(&self) -> Option<ProfileState> {
         lock(&self.state).profile.clone()
     }
 
@@ -43,7 +38,7 @@ impl Daemon {
             in_sync: self.in_sync(&cpu),
             custom,
             profiles,
-            fan_presets: self.config.fan_presets.keys().cloned().collect(),
+            fan_presets: self.presets().keys().cloned().collect(),
             cpu,
             last_error: lock(&self.profile_error).clone(),
         }

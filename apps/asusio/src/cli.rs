@@ -3,6 +3,7 @@ use crate::output::parse;
 use asusio_backends::aura_hid;
 use asusio_core::{
     cpu_profile::{Epp, Governor, Mode},
+    fan_curve::FanCurve,
     lighting::Effect,
     service::LightingMode,
 };
@@ -109,6 +110,45 @@ pub enum FanAction {
     /// Preview or restore one PWM channel to firmware Smart Fan IV mode
     Auto {
         channel: u8,
+        #[arg(long)]
+        execute: bool,
+    },
+    /// Show fan channels, saved presets and the limits curves must respect (through asusiod)
+    Presets {
+        #[arg(long, default_value = asusio_core::service::DEFAULT_SOCKET)]
+        socket: PathBuf,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Save or delete a fan preset through asusiod; no sudo, and a saved preset that the
+    /// active profile uses drives the fans at once
+    Preset {
+        #[arg(long, default_value = asusio_core::service::DEFAULT_SOCKET)]
+        socket: PathBuf,
+        #[command(subcommand)]
+        action: PresetAction,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum PresetAction {
+    /// Validate (and with --execute save and apply) a preset
+    Set {
+        /// 1-32 characters of a-z, 0-9, - or _; `silent` and `performance` are used by
+        /// those profiles
+        name: String,
+        /// PWM=TEMP:PERCENT,TEMP:PERCENT,... for the CPU temperature, e.g.
+        /// 2=40:30,60:50,85:100; repeat for more channels
+        #[arg(long = "curve", required = true, value_parser = parse::curve)]
+        curves: Vec<FanCurve>,
+        #[arg(long)]
+        execute: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Delete a preset saved through asusiod
+    Delete {
+        name: String,
         #[arg(long)]
         execute: bool,
     },

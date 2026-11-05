@@ -136,6 +136,34 @@ pub fn validate_preset_name(name: &str) -> io::Result<()> {
     }
 }
 
+/// Most presets a user may define through the socket.
+pub const MAX_USER_PRESETS: usize = 16;
+
+/// Check a preset arriving over the socket: a valid name, at least one curve, every curve
+/// passing [`FanCurve::validate_user`], and no channel used twice.
+pub fn validate_user_preset(name: &str, curves: &[FanCurve], assignable: &[u8]) -> io::Result<()> {
+    validate_preset_name(name)?;
+    if curves.is_empty() {
+        return Err(invalid(
+            "a fan preset needs at least one curve; delete it instead",
+        ));
+    }
+    let mut channels = Vec::new();
+    for curve in curves {
+        curve
+            .validate_user(assignable)
+            .map_err(|error| invalid(format!("pwm{}: {error}", curve.channel)))?;
+        if channels.contains(&curve.channel) {
+            return Err(invalid(format!(
+                "pwm{} has more than one curve",
+                curve.channel
+            )));
+        }
+        channels.push(curve.channel);
+    }
+    Ok(())
+}
+
 /// Which fan curves a profile ends up running.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FanPlan {
@@ -262,6 +290,29 @@ mod tests {
         assert!("turbo".parse::<Mode>().is_err(), "merged into performance");
         assert!("overclock".parse::<Mode>().is_err());
         assert_eq!(format!("{:<8}|", Mode::Silent), "silent  |", "honors width");
+    }
+
+    #[test]
+    fn socket_presets_are_validated_as_a_whole() {
+        let mut good = curve(2);
+        good.points[1].celsius = 80.0;
+        validate_user_preset("quiet", &[good.clone(), curve(4)], &[2, 4]).unwrap();
+        assert!(
+            validate_user_preset("Quiet!", &[good.clone()], &[2, 4]).is_err(),
+            "name"
+        );
+        assert!(
+            validate_user_preset("quiet", &[], &[2, 4]).is_err(),
+            "empty"
+        );
+        assert!(
+            validate_user_preset("quiet", &[good.clone(), good.clone()], &[2, 4]).is_err(),
+            "duplicate channel"
+        );
+        assert!(
+            validate_user_preset("quiet", &[good], &[4]).is_err(),
+            "channel not assignable"
+        );
     }
 
     #[test]

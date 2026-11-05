@@ -30,13 +30,17 @@ pub enum Operation {
     PreviewProfile,
     /// Apply a CPU profile (governor, EPP, boost, fan preset) and record it for boot.
     SetProfile,
+    /// Validate a fan preset without saving it.
+    PreviewFanPreset,
+    /// Save or delete a fan preset; it drives the fans at once when the profile uses it.
+    SetFanPreset,
 }
 
 impl Operation {
     pub fn writes_hardware(self) -> bool {
         matches!(
             self,
-            Self::SetLighting | Self::RestoreLighting | Self::SetProfile
+            Self::SetLighting | Self::RestoreLighting | Self::SetProfile | Self::SetFanPreset
         )
     }
 
@@ -49,6 +53,8 @@ impl Operation {
             Self::ReadTelemetry => "read live telemetry",
             Self::PreviewProfile => "preview a CPU profile",
             Self::SetProfile => "set the CPU profile",
+            Self::PreviewFanPreset => "preview a fan preset",
+            Self::SetFanPreset => "change fan curves",
         }
     }
 }
@@ -163,6 +169,8 @@ mod tests {
         assert!(Operation::SetLighting.writes_hardware());
         assert!(!Operation::PreviewLighting.writes_hardware());
         assert!(Operation::SetProfile.writes_hardware());
+        assert!(Operation::SetFanPreset.writes_hardware());
+        assert!(!Operation::PreviewFanPreset.writes_hardware());
         assert!(!Operation::PreviewProfile.writes_hardware());
         assert!(!Operation::ReadTelemetry.writes_hardware());
         let denied = policy

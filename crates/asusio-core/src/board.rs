@@ -109,6 +109,20 @@ impl BoardProfile {
         self.fan_headers.iter().find(|h| h.tach == tach)
     }
 
+    /// PWM channels of fan headers (not pumps), sorted and without duplicates: the only
+    /// ones a socket-defined curve may drive.
+    pub fn fan_pwms(&self) -> Vec<u8> {
+        let mut pwms: Vec<u8> = self
+            .fan_headers
+            .iter()
+            .filter(|h| h.kind == FanKind::Fan)
+            .filter_map(|h| h.pwm)
+            .collect();
+        pwms.sort_unstable();
+        pwms.dedup();
+        pwms
+    }
+
     /// PWM channels that drive pumps; curves must never use them.
     pub fn pump_pwms(&self) -> Vec<u8> {
         self.fan_headers
@@ -175,6 +189,11 @@ mod tests {
             ("AIO_PUMP", FanKind::Pump)
         );
         assert_eq!(profile.pump_pwms(), [7]);
+        assert_eq!(
+            profile.fan_pwms(),
+            [1, 2, 3, 4, 6],
+            "CHA_FAN3 shares pwm2; pump excluded"
+        );
         let shared = profile.header_for_tach(5).unwrap();
         assert_eq!(shared.header, "CHA_FAN3");
         assert_eq!(shared.pwm, Some(2), "measured: pwm2 drives CHA_FAN3 too");

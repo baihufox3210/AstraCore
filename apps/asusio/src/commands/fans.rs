@@ -11,6 +11,8 @@ use std::path::Path;
 pub fn run(action: FanAction) -> CliResult {
     let root = Path::new(sysfs::HWMON);
     match action {
+        FanAction::Presets { socket, json } => return super::fan_presets::list(&socket, json),
+        FanAction::Preset { socket, action } => return super::fan_presets::run(&socket, action),
         FanAction::List { json } => {
             let report = fan_hwmon::discover_fan_controllers(root)?;
             if json {

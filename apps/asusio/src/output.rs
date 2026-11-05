@@ -57,6 +57,42 @@ pub mod parse {
         }
     }
 
+    /// `PWM=TEMP:PERCENT,...` for the CPU temperature (`k10temp/Tctl`), default hysteresis.
+    pub fn curve(value: &str) -> Result<asusio_core::fan_curve::FanCurve, String> {
+        use asusio_core::fan_curve::{CurvePoint, FanCurve, SensorRef};
+        let (channel, points) = value
+            .split_once('=')
+            .ok_or("expected PWM=TEMP:PERCENT,TEMP:PERCENT,...")?;
+        let channel: u8 = channel
+            .parse()
+            .map_err(|_| format!("{channel:?} is not a PWM number"))?;
+        let points = points
+            .split(',')
+            .map(|point| {
+                let (celsius, percent) = point
+                    .split_once(':')
+                    .ok_or_else(|| format!("{point:?} is not TEMP:PERCENT"))?;
+                Ok(CurvePoint {
+                    celsius: celsius
+                        .parse()
+                        .map_err(|_| format!("{celsius:?} is not a temperature"))?,
+                    percent: percent
+                        .parse()
+                        .map_err(|_| format!("{percent:?} is not a percentage"))?,
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        Ok(FanCurve {
+            channel,
+            sensor: SensorRef {
+                chip: "k10temp".into(),
+                label: "Tctl".into(),
+            },
+            points,
+            hysteresis_celsius: 3.0,
+        })
+    }
+
     pub fn on_off(value: &str) -> Result<bool, String> {
         match value {
             "on" => Ok(true),
@@ -124,6 +160,13 @@ mod tests {
         assert_eq!(parse::hex_u8("0x67").unwrap(), 0x67);
         assert_eq!(parse::hex_u8("70").unwrap(), 0x70);
         assert!(parse::hex_u8("100").is_err());
+        let curve = parse::curve("2=40:30,60:50,85:100").unwrap();
+        assert_eq!((curve.channel, curve.points.len()), (2, 3));
+        assert_eq!(curve.points[1].percent, 50);
+        assert_eq!(curve.sensor.label, "Tctl");
+        for bad in ["", "2", "x=40:30", "2=40", "2=40:x", "2=a:30", "2=40:300"] {
+            assert!(parse::curve(bad).is_err(), "{bad}");
+        }
         assert_eq!(parse::on_off("off"), Ok(false));
         assert!(parse::lighting_mode("sync").is_ok() && parse::lighting_mode("all").is_err());
         assert!(parse::on_off("1").is_err());

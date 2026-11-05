@@ -158,6 +158,15 @@ fn dispatch(daemon: &Daemon, caller: &Caller, request: Request) -> Response {
             execute,
         } => Response::from_result(daemon.set_profile(mode, custom, execute)),
         Request::Telemetry => Response::from_result(Ok(daemon.telemetry())),
+        Request::GetFans => Response::from_result(Ok(daemon.fan_setup())),
+        Request::SetFanPreset {
+            name,
+            curves,
+            execute,
+        } => Response::from_result(daemon.set_fan_preset(name, curves, execute)),
+        Request::DeleteFanPreset { name, execute } => {
+            Response::from_result(daemon.delete_fan_preset(name, execute))
+        }
     }
 }
 

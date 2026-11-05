@@ -1,6 +1,7 @@
 //! Command dispatch. Each module owns presentation for one area of the CLI.
 mod daemon;
 mod diagnostics;
+mod fan_presets;
 mod fans;
 mod lighting;
 mod profile;

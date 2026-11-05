@@ -384,6 +384,12 @@ impl Sampler {
         self.profile.as_ref()
     }
 
+    /// Connected and unconnected fan headers without taking any other reading.
+    pub fn headers(&mut self) -> (Vec<FanHeaderReading>, Vec<String>) {
+        let mut errors = Vec::new();
+        fan_headers(self.profile.as_ref(), &mut self.seen, &mut errors)
+    }
+
     /// Prime the counters so the next [`read`](Self::read) has load and power.
     pub fn prime(&mut self) {
         self.load.sample();

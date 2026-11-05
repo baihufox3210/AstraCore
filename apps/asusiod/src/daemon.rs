@@ -15,7 +15,7 @@ use std::{
     io::Read,
     os::unix::fs::{MetadataExt, OpenOptionsExt},
     path::Path,
-    sync::{Mutex, MutexGuard},
+    sync::{Mutex, MutexGuard, atomic::AtomicBool},
     time::Instant,
 };
 
@@ -37,6 +37,8 @@ pub struct Daemon {
     /// Serializes CPU profile writes.
     pub(crate) cpu: Mutex<()>,
     pub(crate) profile_error: Mutex<Option<String>>,
+    /// The over-temperature guard has handed the curve channels back to firmware.
+    pub(crate) thermal_hold: AtomicBool,
     /// Telemetry counters, the NVML session and headers seen spinning.
     pub(crate) sampler: Mutex<Sampler>,
 }
@@ -112,6 +114,7 @@ impl Daemon {
             fan_plan: Mutex::new((0, fan_plan)),
             cpu: Mutex::new(()),
             profile_error: Mutex::new(None),
+            thermal_hold: AtomicBool::new(false),
             sampler: Mutex::new(sampler),
             policy: Policy::new(effective_uid(), client_gid, config.allow_active_sessions),
             client_gid,

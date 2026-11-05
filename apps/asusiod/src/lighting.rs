@@ -118,7 +118,7 @@ impl Daemon {
         fresh
     }
 
-    fn save(&self, state: &State) -> Option<String> {
+    pub(crate) fn save(&self, state: &State) -> Option<String> {
         state
             .save(&self.config.state_file)
             .err()

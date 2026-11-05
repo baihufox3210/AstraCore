@@ -254,6 +254,10 @@ pub struct State {
     /// CPU profile to reapply at boot.
     #[serde(default)]
     pub profile: Option<ProfileState>,
+    /// Fan presets saved through the socket; they replace configuration presets of the
+    /// same name. Validated with the stricter socket rules before they are stored.
+    #[serde(default)]
+    pub user_fan_presets: FanPresets,
 }
 
 impl State {

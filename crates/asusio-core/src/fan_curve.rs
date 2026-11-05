@@ -8,6 +8,19 @@ use std::{io, path::Path};
 
 /// Lowest manual duty a curve may request; matches the backend's manual range.
 pub const MIN_PERCENT: u8 = 30;
+/// Most points a curve defined through the daemon's socket may have.
+pub const MAX_POINTS: usize = 16;
+/// A curve defined through the socket must reach 100% by this temperature.
+pub const MAX_FULL_SPEED_CELSIUS: f64 = 85.0;
+/// The only sensors a socket-defined curve may follow. A curve on any other sensor
+/// could follow one that never warms up (an unconnected input reads a constant low
+/// value) and keep a fan at its minimum. Curves in the root-owned configuration are
+/// not restricted.
+pub const USER_SENSORS: [(&str, &str); 1] = [("k10temp", "Tctl")];
+/// Above this CPU temperature the daemon hands every curve channel back to firmware,
+/// whatever the curves say, and resumes once the CPU is below [`THERMAL_RESUME_CELSIUS`].
+pub const THERMAL_RELEASE_CELSIUS: f64 = 90.0;
+pub const THERMAL_RESUME_CELSIUS: f64 = 80.0;
 /// Readings outside this range are treated as sensor faults.
 const PLAUSIBLE_CELSIUS: std::ops::RangeInclusive<f64> = -20.0..=150.0;
 
@@ -76,6 +89,39 @@ impl FanCurve {
         }
         if !(0.0..=10.0).contains(&self.hysteresis_celsius) {
             return Err(invalid("hysteresis must be 0..10 °C"));
+        }
+        Ok(())
+    }
+
+    /// [`validate`](Self::validate) plus the stricter rules for curves that arrive over the
+    /// socket: a whitelisted sensor, at most [`MAX_POINTS`] points, full speed reached by
+    /// [`MAX_FULL_SPEED_CELSIUS`], and a PWM channel from `assignable`.
+    pub fn validate_user(&self, assignable: &[u8]) -> io::Result<()> {
+        self.validate()?;
+        if self.points.len() > MAX_POINTS {
+            return Err(invalid(format!(
+                "fan curve has more than {MAX_POINTS} points"
+            )));
+        }
+        if !USER_SENSORS
+            .iter()
+            .any(|(chip, label)| *chip == self.sensor.chip && *label == self.sensor.label)
+        {
+            return Err(invalid(format!(
+                "sensor {}/{} is not allowed; use {}/{}",
+                self.sensor.chip, self.sensor.label, USER_SENSORS[0].0, USER_SENSORS[0].1
+            )));
+        }
+        if !assignable.contains(&self.channel) {
+            return Err(invalid(
+                "this PWM output cannot be driven by a curve (pumps and unknown channels are excluded)",
+            ));
+        }
+        let full = self.points.iter().find(|point| point.percent == 100);
+        if full.is_none_or(|point| point.celsius > MAX_FULL_SPEED_CELSIUS) {
+            return Err(invalid(format!(
+                "fan curve must reach 100 percent by {MAX_FULL_SPEED_CELSIUS} °C"
+            )));
         }
         Ok(())
     }
@@ -167,6 +213,43 @@ impl<S: TemperatureSensor, P: PwmOutput> CurveController<S, P> {
     }
 }
 
+/// What the daemon must do after a CPU temperature reading.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GuardAction {
+    None,
+    /// Hand every curve channel back to firmware.
+    Release,
+    /// The CPU has cooled down; start the curves again.
+    Resume,
+}
+
+/// Independent over-temperature protection: it looks at the CPU temperature only, not at
+/// any curve, so a bad curve cannot disable it. An unreadable sensor counts as too hot.
+#[derive(Debug, Default)]
+pub struct ThermalGuard {
+    held: bool,
+}
+
+impl ThermalGuard {
+    pub fn held(&self) -> bool {
+        self.held
+    }
+
+    pub fn update(&mut self, celsius: Option<f64>) -> GuardAction {
+        let reading = celsius.filter(|value| value.is_finite());
+        if self.held {
+            if reading.is_some_and(|value| value <= THERMAL_RESUME_CELSIUS) {
+                self.held = false;
+                return GuardAction::Resume;
+            }
+        } else if reading.is_none_or(|value| value >= THERMAL_RELEASE_CELSIUS) {
+            self.held = true;
+            return GuardAction::Release;
+        }
+        GuardAction::None
+    }
+}
+
 /// Reads one temperature through hwmon discovery; the chip/label pair must be unique.
 pub struct HwmonTemperature {
     sensor: SensorRef,
@@ -253,6 +336,75 @@ mod tests {
             ]
         }))
         .unwrap()
+    }
+
+    #[test]
+    fn socket_curves_follow_the_stricter_rules() {
+        let assignable = [2u8, 4];
+        curve().validate_user(&assignable).unwrap();
+        let mut other_sensor = curve();
+        other_sensor.sensor = SensorRef {
+            chip: "nct6799".into(),
+            label: "AUXTIN5".into(),
+        };
+        assert!(
+            other_sensor.validate_user(&assignable).is_err(),
+            "sensor whitelist"
+        );
+        let mut pump = curve();
+        pump.channel = 7;
+        assert!(
+            pump.validate_user(&assignable).is_err(),
+            "pump or unknown channel"
+        );
+        let mut late = curve();
+        late.points[2].celsius = 120.0;
+        late.validate().unwrap();
+        assert!(
+            late.validate_user(&assignable).is_err(),
+            "full speed after 85 C"
+        );
+        let mut long = curve();
+        long.points = (0..=MAX_POINTS as u8)
+            .map(|i| CurvePoint {
+                celsius: 20.0 + f64::from(i) * 3.0,
+                percent: if i == MAX_POINTS as u8 { 100 } else { 30 },
+            })
+            .collect();
+        long.validate().unwrap();
+        assert!(long.validate_user(&assignable).is_err(), "too many points");
+    }
+
+    #[test]
+    fn thermal_guard_releases_hot_and_unreadable_and_resumes_with_hysteresis() {
+        let mut guard = ThermalGuard::default();
+        assert_eq!(guard.update(Some(60.0)), GuardAction::None);
+        assert_eq!(guard.update(Some(89.9)), GuardAction::None);
+        assert_eq!(guard.update(Some(90.0)), GuardAction::Release);
+        assert!(guard.held());
+        assert_eq!(
+            guard.update(Some(95.0)),
+            GuardAction::None,
+            "already released"
+        );
+        assert_eq!(
+            guard.update(Some(85.0)),
+            GuardAction::None,
+            "inside the hysteresis band"
+        );
+        assert_eq!(
+            guard.update(None),
+            GuardAction::None,
+            "stays held without a reading"
+        );
+        assert_eq!(guard.update(Some(80.0)), GuardAction::Resume);
+        assert_eq!(
+            guard.update(None),
+            GuardAction::Release,
+            "unreadable sensor is hot"
+        );
+        assert_eq!(guard.update(Some(f64::NAN)), GuardAction::None);
+        assert_eq!(guard.update(Some(70.0)), GuardAction::Resume);
     }
 
     #[test]

@@ -3,6 +3,7 @@
 pub use crate::board::FanKind;
 use crate::{
     cpu_profile::{Custom, FanPlan, Mode, Profile},
+    fan_curve::FanCurve,
     lighting::{Availability, Effect, EffectInfo, TargetKind},
     service::{LightingMode, LightingState},
 };
@@ -76,6 +77,21 @@ pub enum Request {
     },
     /// Live readings: CPU state, Tctl, fans, package power and the active profile.
     Telemetry,
+    /// Fan channels, presets and the limits curves must respect.
+    GetFans,
+    /// Preview (or, with `execute`, save and apply) a fan preset. Saving takes effect at
+    /// once when the active profile uses the preset. Curves are checked against
+    /// [`FanLimits`]; a rejected preset changes nothing.
+    SetFanPreset {
+        name: String,
+        curves: Vec<FanCurve>,
+        execute: bool,
+    },
+    /// Preview (or delete) a preset saved through the socket.
+    DeleteFanPreset {
+        name: String,
+        execute: bool,
+    },
 }
 
 impl Request {
@@ -97,6 +113,14 @@ impl Request {
             Self::SetProfile { execute: false, .. } => Operation::PreviewProfile,
             Self::SetProfile { execute: true, .. } => Operation::SetProfile,
             Self::Telemetry => Operation::ReadTelemetry,
+            Self::GetFans => Operation::ReadStatus,
+            Self::SetFanPreset { execute, .. } | Self::DeleteFanPreset { execute, .. } => {
+                if *execute {
+                    Operation::SetFanPreset
+                } else {
+                    Operation::PreviewFanPreset
+                }
+            }
         }
     }
 }
@@ -334,6 +358,85 @@ pub struct Telemetry {
     pub gpu_error: Option<String>,
     /// Readings that could not be taken.
     pub errors: Vec<String>,
+}
+
+/// A PWM output that a curve can drive.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FanChannelInfo {
+    pub pwm: u8,
+    /// Every header on this output, e.g. `CPU_OPT` and `CHA_FAN3`.
+    pub headers: Vec<String>,
+    /// At least one of the headers has reported a speed.
+    pub connected: bool,
+    /// The kernel exposes this PWM output.
+    pub available: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FanSensorInfo {
+    pub chip: String,
+    pub label: String,
+    pub celsius: Option<f64>,
+}
+
+/// What a curve must satisfy; the editor uses it to stay inside the rules.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FanLimits {
+    pub min_percent: u8,
+    pub max_points: usize,
+    pub max_full_speed_celsius: f64,
+    pub min_celsius: f64,
+    pub max_hysteresis_celsius: f64,
+    pub max_user_presets: usize,
+    pub thermal_release_celsius: f64,
+    pub thermal_resume_celsius: f64,
+    pub sensors: Vec<FanSensorInfo>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PresetSource {
+    /// Defined in `/etc/asusio/asusiod.json`; read-only here.
+    Config,
+    /// Saved through the socket.
+    User,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FanPresetInfo {
+    pub name: String,
+    pub source: PresetSource,
+    /// A user preset replaces a configuration preset of the same name.
+    pub overrides_config: bool,
+    pub curves: Vec<FanCurve>,
+    /// Profiles that select this preset.
+    pub used_by: Vec<Mode>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FanSetup {
+    pub board: Option<String>,
+    /// False when curves cannot be edited, e.g. the board is unknown.
+    pub editable: bool,
+    pub reason: Option<String>,
+    pub channels: Vec<FanChannelInfo>,
+    pub presets: Vec<FanPresetInfo>,
+    /// Preset the active profile runs, if any.
+    pub active_preset: Option<String>,
+    /// The over-temperature guard has handed the fans back to firmware.
+    pub thermal_hold: bool,
+    pub limits: FanLimits,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FanPresetResult {
+    pub executed: bool,
+    /// The saved preset; `None` after a delete.
+    pub preset: Option<FanPresetInfo>,
+    /// The running curves changed as a result.
+    pub applied: bool,
+    /// Set when the change is active but could not be saved for the next boot.
+    pub persist_error: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
