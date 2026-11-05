@@ -1,10 +1,12 @@
 //! Newline-delimited JSON protocol between clients (CLI, GUI) and `asusiod`.
 //! One request and one response per connection.
+pub use crate::board::FanKind;
 use crate::{
     cpu_profile::{Custom, FanPlan, Mode, Profile},
     lighting::{Availability, Effect, EffectInfo, TargetKind},
     service::{LightingMode, LightingState},
 };
+pub use asusio_backends::nvidia_nvml::{GpuFan, GpuReading};
 use asusio_policy::Operation;
 use asusio_types::Rgb;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -237,12 +239,6 @@ impl CpuSummary {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct FanReading {
-    pub channel: u8,
-    pub rpm: u64,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PwmControl {
@@ -263,6 +259,46 @@ pub struct PwmReading {
     pub control: PwmControl,
 }
 
+/// One connected fan or pump header. Headers that never reported a speed are listed
+/// in [`Telemetry::unused_headers`] instead.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FanHeaderReading {
+    /// `fanN_input` number.
+    pub channel: u8,
+    /// Board header, e.g. `AIO_PUMP`, when a board profile describes it.
+    pub header: Option<String>,
+    pub label: Option<String>,
+    pub kind: FanKind,
+    pub rpm: u64,
+    /// The header's PWM output, when the driver exposes one.
+    pub pwm: Option<PwmReading>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CpuUsage {
+    pub total_percent: f64,
+    /// Per logical CPU, in CPU number order.
+    pub cores_percent: Vec<f64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CpuFrequency {
+    pub average_mhz: u32,
+    pub max_mhz: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MemoryUsage {
+    pub used_bytes: u64,
+    pub total_bytes: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LabeledValue {
+    pub label: String,
+    pub value: f64,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Telemetry {
     pub mode: Option<Mode>,
@@ -270,13 +306,29 @@ pub struct Telemetry {
     pub in_sync: Option<bool>,
     pub cpu: CpuSummary,
     pub tctl_celsius: Option<f64>,
+    /// Per-CCD temperatures (`Tccd1`, ...), in degrees Celsius.
+    pub ccd_celsius: Vec<LabeledValue>,
+    pub cpu_usage: Option<CpuUsage>,
+    pub cpu_frequency: Option<CpuFrequency>,
     /// Coarse package power average; only available through the root daemon.
     pub package_watts: Option<f64>,
+    /// Coarse core power average; only available through the root daemon.
+    pub core_watts: Option<f64>,
+    pub memory: Option<MemoryUsage>,
+    /// Board voltages named and scaled by the board profile, in volts.
+    pub voltages: Vec<LabeledValue>,
     /// Active sched_ext scheduler, if one is loaded.
     pub scheduler: Option<String>,
-    pub fans: Vec<FanReading>,
-    pub pwm: Vec<PwmReading>,
+    /// Board described by an embedded profile, if any.
+    pub board: Option<String>,
+    /// Connected fan and pump headers.
+    pub fans: Vec<FanHeaderReading>,
+    /// Headers that have not reported a speed (nothing connected).
+    pub unused_headers: Vec<String>,
     pub fan: Option<FanPlan>,
+    pub gpus: Vec<GpuReading>,
+    /// Why GPU readings are missing, e.g. no NVIDIA driver.
+    pub gpu_error: Option<String>,
     /// Readings that could not be taken.
     pub errors: Vec<String>,
 }

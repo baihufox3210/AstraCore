@@ -413,15 +413,46 @@ channel of the default curves and all presets.
 }
 ```
 
-**Telemetry** (`profile status --json`, IPC `telemetry`) contains `mode`, `in_sync`
-(false when the CPU was changed outside asusio), `cpu` (`supported`, `reason`,
-`governor`, `epp`, `boost`; `null` means mixed or unknown), `tctl_celsius`, `fans`
-(`channel`, `rpm`), `pwm` (`channel`, `percent`, raw `enable`, `control`: `curve`,
-`manual` or `firmware`), `fan`, `scheduler` (loaded sched_ext scheduler, e.g.
-`lavd_...`), `package_watts` and `errors`. Package power comes from the root-only
-powercap `package-0` energy counter, so it is only available through the daemon; it
-is averaged over at least one second and rounded to 0.1 W. The fan tachometer
-number still does not establish the PWM-to-header mapping.
+**Telemetry** (`profile status --json`, IPC `telemetry`) is read-only:
+
+| Field | Content |
+|---|---|
+| `mode`, `in_sync` | Recorded profile; `in_sync` is false when the CPU was changed outside asusio |
+| `cpu` | `supported`, `reason`, `governor`, `epp`, `boost` (`null`: mixed or unknown) |
+| `tctl_celsius`, `ccd_celsius` | k10temp `Tctl` and `Tccd1`, `Tccd2`, ... |
+| `cpu_usage` | `total_percent` and `cores_percent` from `/proc/stat` deltas |
+| `cpu_frequency` | `average_mhz`, `max_mhz` over online policies (`cpuinfo_avg_freq`) |
+| `package_watts`, `core_watts` | powercap `package-0` and `core` zones (root only) |
+| `memory` | `used_bytes` (`MemTotal - MemAvailable`), `total_bytes` |
+| `voltages` | Board voltages named and scaled by the board profile, in volts |
+| `fans` | Connected headers: `channel`, `header`, `label`, `kind` (`fan`, `pump`, `unknown`), `rpm`, `pwm` (`channel`, `percent`, raw `enable`, `control`: `curve`, `manual` or `firmware`) |
+| `unused_headers` | Headers that have never reported a speed |
+| `gpus` | NVIDIA GPUs through NVML: temperature, load, memory-controller load, power and limit, graphics/memory clocks, VRAM, P-state, PCIe link, and per fan `percent`, `target_percent`, `rpm` |
+| `gpu_error`, `scheduler`, `board`, `fan`, `errors` | Why GPU data is missing; sched_ext scheduler; matched board; selected fan curves; failed readings |
+
+A header counts as connected once it has reported a speed; asusiod remembers that
+for its lifetime, so a fan that stops at low temperature stays listed. Without the
+daemon, `profile status` samples once over 300 ms and shows only headers that are
+spinning. Power comes from root-only energy counters, averaged over at least one
+second and rounded to 0.1 W, so it is only available through asusiod.
+
+GPU readings use NVML (`libnvidia-ml.so.1`), loaded at runtime; without the NVIDIA
+driver `gpus` is empty and `gpu_error` says why. Only query functions are resolved;
+no fan, clock or power control. NVML has no public core-voltage query, so GPU voltage
+is not reported. Fans of a graphics card are never among the motherboard headers.
+
+**Board profiles** in `hardware/boards/` are embedded at build time and match the DMI
+vendor and board name exactly. They name each Super I/O fan input after its header,
+mark pumps, and name and scale voltage inputs (external divider factors; the kernel
+already applies the chip's internal ones). The ROG STRIX B850-A GAMING WIFI7 S NEO
+profile follows LibreHardwareMonitor's table for the B850-A; its fan header order was
+confirmed by the board's owner, voltages were checked for plausibility only. Daisy-
+chained fans report one speed per header.
+
+**Pumps never run on curves.** When the board profile marks a header as a pump,
+asusiod refuses to start if `fan_curves` or any `fan_presets` entry uses its PWM
+channel; the pump stays under firmware control (the B850-A runs AIO_PUMP at full
+speed by default).
 
 ## System service: boot restore and fan curves
 
@@ -515,7 +546,9 @@ lighting orchestration; applications own argument parsing and presentation.
 | `asusio_core::service` | Daemon configuration, recorded state and IPC protocol (`ipc::call`) |
 | `asusio_core::fan_curve` | Curve validation, interpolation/hysteresis controller, hwmon/nct6799 adapters |
 | `asusio_core::cpu_profile` | Built-in and custom CPU profiles, fan-preset resolution |
-| `asusio_core::telemetry` | Read-only live readings (CPU, Tctl, fans, package power, sched_ext) |
+| `asusio_core::telemetry` | Read-only live readings: CPU, memory, voltages, fan headers, GPUs, sched_ext |
+| `asusio_core::board` | Embedded board profiles: fan headers, pumps, voltage names and scaling |
+| `asusio_backends::nvidia_nvml` | Read-only NVIDIA GPU readings through NVML, loaded at runtime |
 | `asusio_backends::cpu_pstate` | Verified amd-pstate-epp governor/EPP/boost writes with rollback |
 | `asusio-hal` | `TemperatureSensor` / `PwmOutput` traits used by control loops |
 | `asusio-policy` | Per-request authorization of daemon clients |

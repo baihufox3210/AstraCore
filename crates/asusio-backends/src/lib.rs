@@ -9,6 +9,7 @@ pub mod ene_smbus;
 pub mod fan_hwmon;
 pub mod lianli_ipc;
 pub mod lianli_screen;
+pub mod nvidia_nvml;
 pub mod scope_keyboard;
 mod util;
 

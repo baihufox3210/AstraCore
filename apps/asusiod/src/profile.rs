@@ -6,7 +6,6 @@ use asusio_core::{
         ProfileState,
         ipc::{CpuSummary, FanState, ProfileReport, ProfileResult, PwmControl, Telemetry},
     },
-    telemetry,
 };
 use asusio_discovery::sysfs;
 use std::{io, path::Path};
@@ -136,12 +135,16 @@ impl Daemon {
     }
 
     pub fn telemetry(&self) -> Telemetry {
-        let mut telemetry = telemetry::read(Some(&mut lock(&self.power)));
+        let mut telemetry = lock(&self.sampler).read();
         telemetry.mode = self.recorded_profile().map(|p| p.mode);
         telemetry.in_sync = self.in_sync(&telemetry.cpu);
         telemetry.fan = Some(lock(&self.fan_plan).1.clone());
         let fans = lock(&self.fans);
-        for pwm in &mut telemetry.pwm {
+        for pwm in telemetry
+            .fans
+            .iter_mut()
+            .filter_map(|header| header.pwm.as_mut())
+        {
             let driven = fans.iter().any(|fan| {
                 fan.channel == pwm.channel && matches!(fan.state, FanState::Active { .. })
             });

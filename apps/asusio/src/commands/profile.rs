@@ -5,10 +5,15 @@ use crate::{
 };
 use asusio_core::{
     cpu_profile::{Custom, FanPlan, Mode, Profile},
-    service::ipc::{self, CpuSummary, ProfileReport, ProfileResult, Request, Telemetry},
-    telemetry,
+    service::ipc::{
+        self, CpuSummary, GpuReading, ProfileReport, ProfileResult, Request, Telemetry,
+    },
+    telemetry::Sampler,
 };
-use std::path::Path;
+use std::{path::Path, time::Duration};
+
+/// Without asusiod, load is measured over this short window.
+const LOCAL_SAMPLE: Duration = Duration::from_millis(300);
 
 fn on_off(value: bool) -> &'static str {
     if value { "on" } else { "off" }
@@ -121,11 +126,67 @@ fn list(socket: &Path, json: bool) -> CliResult {
     Ok(())
 }
 
+fn optional<T: std::fmt::Display>(value: Option<T>, unit: &str) -> String {
+    value.map_or_else(
+        || "unavailable".to_owned(),
+        |value| format!("{value}{unit}"),
+    )
+}
+
+fn gib(bytes: u64) -> f64 {
+    bytes as f64 / (1u64 << 30) as f64
+}
+
+fn print_gpu(gpu: &GpuReading) {
+    println!(
+        "GPU {}: {}",
+        gpu.index,
+        gpu.name.as_deref().unwrap_or("unknown")
+    );
+    println!(
+        "  temperature {}  load {}  memory controller {}  P{}",
+        optional(gpu.temperature_celsius, " °C"),
+        optional(gpu.utilization_percent, "%"),
+        optional(gpu.memory_utilization_percent, "%"),
+        optional(gpu.pstate, "")
+    );
+    println!(
+        "  power {} of {}",
+        optional(gpu.power_watts.map(|w| format!("{w:.1}")), " W"),
+        optional(gpu.power_limit_watts.map(|w| format!("{w:.0}")), " W")
+    );
+    println!(
+        "  clocks graphics {} (max {})  memory {}",
+        optional(gpu.graphics_clock_mhz, " MHz"),
+        optional(gpu.max_graphics_clock_mhz, " MHz"),
+        optional(gpu.memory_clock_mhz, " MHz")
+    );
+    if let (Some(used), Some(total)) = (gpu.memory_used_bytes, gpu.memory_total_bytes) {
+        println!("  VRAM {:.1} / {:.1} GiB", gib(used), gib(total));
+    }
+    if let (Some(generation), Some(width)) = (gpu.pcie_generation, gpu.pcie_width) {
+        println!("  PCIe Gen{generation} x{width}");
+    }
+    for fan in &gpu.fans {
+        println!(
+            "  fan {}: {} RPM, {} (target {})",
+            fan.index,
+            optional(fan.rpm, ""),
+            optional(fan.percent, "%"),
+            optional(fan.target_percent, "%")
+        );
+    }
+    println!("  voltage: not provided by NVML");
+}
+
 fn status(socket: &Path, json: bool) -> CliResult {
     let (telemetry, local) = if ipc::available(socket) {
         (ipc::call::<Telemetry>(socket, &Request::Telemetry)?, false)
     } else {
-        (telemetry::read(None), true)
+        let mut sampler = Sampler::new();
+        sampler.prime();
+        std::thread::sleep(LOCAL_SAMPLE);
+        (sampler.read(), true)
     };
     if json {
         let mut value = serde_json::to_value(&telemetry)?;
@@ -140,32 +201,100 @@ fn status(socket: &Path, json: bool) -> CliResult {
         None => println!("Profile: none recorded"),
     }
     println!("CPU: {}", describe_cpu(&telemetry.cpu));
+    let ccd: Vec<_> = telemetry
+        .ccd_celsius
+        .iter()
+        .map(|ccd| format!("{} {:.1} °C", ccd.label, ccd.value))
+        .collect();
     println!(
-        "Scheduler: {}",
+        "  Tctl {}  {}",
+        optional(telemetry.tctl_celsius.map(|c| format!("{c:.1}")), " °C"),
+        ccd.join("  ")
+    );
+    if let Some(usage) = &telemetry.cpu_usage {
+        let cores: Vec<_> = usage
+            .cores_percent
+            .iter()
+            .map(|core| format!("{core:.0}"))
+            .collect();
+        println!(
+            "  load {:.1}%  per CPU [{}]",
+            usage.total_percent,
+            cores.join(" ")
+        );
+    } else {
+        println!("  load unavailable");
+    }
+    if let Some(frequency) = &telemetry.cpu_frequency {
+        println!(
+            "  frequency average {} MHz, highest {} MHz",
+            frequency.average_mhz, frequency.max_mhz
+        );
+    }
+    println!(
+        "  power package {}  cores {}",
+        optional(telemetry.package_watts.map(|w| format!("{w:.1}")), " W"),
+        optional(telemetry.core_watts.map(|w| format!("{w:.1}")), " W")
+    );
+    println!(
+        "  scheduler {}",
         telemetry
             .scheduler
             .as_deref()
             .unwrap_or("kernel default (no sched_ext)")
     );
-    match telemetry.tctl_celsius {
-        Some(celsius) => println!("Tctl: {celsius:.1} °C"),
-        None => println!("Tctl: unavailable"),
-    }
-    match telemetry.package_watts {
-        Some(watts) => println!("Package power: {watts:.1} W"),
-        None => println!("Package power: unavailable"),
-    }
-    for fan in &telemetry.fans {
-        println!("  fan{}: {} RPM", fan.channel, fan.rpm);
-    }
-    for pwm in &telemetry.pwm {
-        let control = serde_json::to_value(pwm.control)?;
+    if let Some(memory) = &telemetry.memory {
         println!(
-            "  pwm{}: {}% {}",
-            pwm.channel,
-            pwm.percent,
-            control.as_str().unwrap_or_default()
+            "Memory: {:.1} / {:.1} GiB",
+            gib(memory.used_bytes),
+            gib(memory.total_bytes)
         );
+    }
+    for gpu in &telemetry.gpus {
+        print_gpu(gpu);
+    }
+    if let Some(error) = &telemetry.gpu_error {
+        println!("GPU: {error}");
+    }
+    if !telemetry.voltages.is_empty() {
+        let voltages: Vec<_> = telemetry
+            .voltages
+            .iter()
+            .map(|v| format!("{} {:.3} V", v.label, v.value))
+            .collect();
+        println!(
+            "Voltages ({}): {}",
+            telemetry.board.as_deref().unwrap_or("board"),
+            voltages.join(", ")
+        );
+    }
+    println!("Fans and pumps:");
+    for fan in &telemetry.fans {
+        let kind = serde_json::to_value(fan.kind)?;
+        let name = match (&fan.header, &fan.label) {
+            (Some(header), Some(label)) => format!("{header} ({label})"),
+            _ => format!("fan{}", fan.channel),
+        };
+        let control = match &fan.pwm {
+            Some(pwm) => {
+                let control = serde_json::to_value(pwm.control)?;
+                format!(
+                    "pwm{} {}% {}",
+                    pwm.channel,
+                    pwm.percent,
+                    control.as_str().unwrap_or_default()
+                )
+            }
+            None => "no PWM output".to_owned(),
+        };
+        println!(
+            "  {name} [{}]: {} RPM, {control}",
+            kind.as_str().unwrap_or_default(),
+            fan.rpm
+        );
+    }
+    if !telemetry.unused_headers.is_empty() {
+        println!("  not connected: {}", telemetry.unused_headers.join(", "));
     }
     if let Some(plan) = &telemetry.fan {
         println!("Fan curves: {}", describe_fan(plan));

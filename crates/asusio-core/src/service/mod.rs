@@ -135,6 +135,18 @@ impl ServiceConfig {
         Ok(())
     }
 
+    /// Pumps must never run on a fan curve, which may slow them to 30%. Refuse any
+    /// curve or preset that uses one of `pumps` (PWM channels from the board profile).
+    pub fn check_pumps(&self, pumps: &[u8]) -> io::Result<()> {
+        match self.fan_channels().into_iter().find(|c| pumps.contains(c)) {
+            Some(channel) => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("pwm{channel} drives a pump; fan curves and presets must not use it"),
+            )),
+            None => Ok(()),
+        }
+    }
+
     /// Every channel any default or preset curve may drive; all are released on stop.
     pub fn fan_channels(&self) -> Vec<u8> {
         let mut channels: Vec<u8> = self
@@ -366,6 +378,9 @@ mod tests {
             .insert("silent".into(), vec![quiet.clone()]);
         presets.validate().unwrap();
         assert_eq!(presets.fan_channels(), [2, 3]);
+        presets.check_pumps(&[7]).unwrap();
+        let error = presets.check_pumps(&[3]).unwrap_err();
+        assert!(error.to_string().contains("pwm3 drives a pump"), "{error}");
         presets
             .fan_presets
             .insert("Bad Name".into(), vec![quiet.clone()]);

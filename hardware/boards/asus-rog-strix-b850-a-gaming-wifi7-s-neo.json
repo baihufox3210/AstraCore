@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "vendor": "ASUSTeK COMPUTER INC.",
+  "boards": ["ROG STRIX B850-A GAMING WIFI7 S NEO"],
+  "controller": "nct6799",
+  "sources": [
+    "LibreHardwareMonitor SuperIOHardware.cs, GetNuvotonConfigurationD, ROG_STRIX_B850_A_GAMING_WIFI",
+    "ASUS ROG STRIX B850-A GAMING WIFI specifications: CPU_FAN, CPU_OPT, AIO_PUMP, CHA_FAN1-4"
+  ],
+  "verification": "Fan header order confirmed by the owner of this board on 2026-11-04. Voltage names and external dividers follow LibreHardwareMonitor; values were checked for plausibility, not measured.",
+  "fan_headers": [
+    {"tach": 1, "pwm": 1, "header": "CPU_FAN", "label": "CPU Fan", "kind": "fan"},
+    {"tach": 2, "pwm": 2, "header": "CPU_OPT", "label": "CPU Optional Fan", "kind": "fan"},
+    {"tach": 3, "pwm": 3, "header": "CHA_FAN1", "label": "Chassis Fan 1", "kind": "fan"},
+    {"tach": 4, "pwm": 4, "header": "CHA_FAN2", "label": "Chassis Fan 2", "kind": "fan"},
+    {"tach": 5, "pwm": 5, "header": "CHA_FAN3", "label": "Chassis Fan 3", "kind": "fan"},
+    {"tach": 6, "pwm": 6, "header": "CHA_FAN4", "label": "Chassis Fan 4", "kind": "fan"},
+    {"tach": 7, "pwm": 7, "header": "AIO_PUMP", "label": "AIO Pump", "kind": "pump"}
+  ],
+  "voltages": [
+    {"input": 0, "label": "Vcore", "scale": 1.0},
+    {"input": 1, "label": "+5V", "scale": 5.02},
+    {"input": 2, "label": "AVSB", "scale": 1.0},
+    {"input": 3, "label": "+3.3V", "scale": 1.0},
+    {"input": 4, "label": "+12V", "scale": 11.98},
+    {"input": 7, "label": "+3V Standby", "scale": 1.0},
+    {"input": 8, "label": "CMOS Battery", "scale": 1.0},
+    {"input": 10, "label": "CPU VDDIO Memory", "scale": 1.0},
+    {"input": 11, "label": "VMisc", "scale": 1.0},
+    {"input": 12, "label": "1.8V Standby", "scale": 1.766}
+  ]
+}

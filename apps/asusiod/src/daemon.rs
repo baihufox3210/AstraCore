@@ -6,9 +6,8 @@ use asusio_core::{
         ServiceConfig, State,
         ipc::{FanStatus, RestoreEntry, Status},
     },
-    telemetry::PowerSampler,
+    telemetry::Sampler,
 };
-use asusio_discovery::sysfs;
 use asusio_policy::Policy;
 use std::{
     collections::BTreeMap,
@@ -38,7 +37,8 @@ pub struct Daemon {
     /// Serializes CPU profile writes.
     pub(crate) cpu: Mutex<()>,
     pub(crate) profile_error: Mutex<Option<String>>,
-    pub(crate) power: Mutex<PowerSampler>,
+    /// Telemetry counters, the NVML session and headers seen spinning.
+    pub(crate) sampler: Mutex<Sampler>,
 }
 
 pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -102,13 +102,17 @@ impl Daemon {
             }
             gid
         });
+        let sampler = Sampler::new();
+        // The board profile names the pump headers; curves must never drive them.
+        let pumps = sampler.profile().map(|p| p.pump_pwms()).unwrap_or_default();
+        config.check_pumps(&pumps)?;
         let state = State::load(&config.state_file)?;
         let fan_plan = FanPlan::resolve(None, &config.fan_presets, &config.fan_curves);
         Ok(Self {
             fan_plan: Mutex::new((0, fan_plan)),
             cpu: Mutex::new(()),
             profile_error: Mutex::new(None),
-            power: Mutex::new(PowerSampler::new(Path::new(sysfs::POWERCAP))),
+            sampler: Mutex::new(sampler),
             policy: Policy::new(effective_uid(), client_gid, config.allow_active_sessions),
             client_gid,
             hardware: Mutex::new(()),

@@ -1,4 +1,5 @@
 //! Reusable orchestration over discovery and native backends.
+pub mod board;
 pub mod cpu_profile;
 pub mod detect;
 pub mod fan_curve;
