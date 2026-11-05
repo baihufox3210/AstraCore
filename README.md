@@ -542,9 +542,10 @@ asusio fans preset delete silent --execute
 ```
 
 `--curve` is `PWM=TEMP:PERCENT,...` for the CPU temperature. Names are 1-32 characters of
-`a-z`, `0-9`, `-` and `_`. The built-in profiles select `silent` and `performance`;
-`custom` can select any name (`asusio profile set custom --fan-preset NAME`); balanced
-keeps firmware control. IPC methods: `get_fans`, `set_fan_preset`, `delete_fan_preset`.
+`a-z`, `0-9`, `-` and `_`. Each built-in profile selects the preset of
+its own name (`silent`, `balanced`, `performance`); while that preset is not defined the
+fans stay under firmware control. `custom` can select any name
+(`asusio profile set custom --fan-preset NAME`). IPC methods: `get_fans`, `set_fan_preset`, `delete_fan_preset`.
 
 Because the socket is open to local sessions, curves that arrive over it are held to
 stricter rules than the root configuration, so a bad or hostile curve cannot starve the

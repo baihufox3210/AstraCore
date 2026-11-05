@@ -130,6 +130,7 @@ dependencies = [
 name = "asusiod"
 version = "0.1.0"
 dependencies = [
+ "asusio-backends",
  "asusio-core",
  "asusio-discovery",
  "asusio-policy",

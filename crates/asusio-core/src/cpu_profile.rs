@@ -49,7 +49,7 @@ impl Mode {
             ),
             Self::Balanced => (
                 settings(Governor::Powersave, Epp::BalancePerformance, true),
-                None,
+                Some("balanced"),
             ),
             Self::Performance => (
                 settings(Governor::Powersave, Epp::Performance, true),
@@ -237,11 +237,13 @@ pub fn resolve(
         }
     };
     cpu.validate()?;
-    Ok(Profile {
-        mode,
-        cpu,
-        fan: FanPlan::resolve(preset.as_deref(), presets, default),
-    })
+    let mut fan = FanPlan::resolve(preset.as_deref(), presets, default);
+    // A built-in mode without a saved preset is the normal case (its fans stay under
+    // firmware control), not something to warn about.
+    if mode.builtin().is_some() && fan.preset.is_none() {
+        fan.note = None;
+    }
+    Ok(Profile { mode, cpu, fan })
 }
 
 #[cfg(test)]
@@ -318,11 +320,21 @@ mod tests {
     #[test]
     fn missing_presets_fall_back_to_firmware() {
         let presets = FanPresets::new();
-        let profile = resolve(Mode::Silent, None, &presets, &[]).unwrap();
-        assert!(profile.fan.firmware && profile.fan.preset.is_none());
-        assert!(profile.fan.note.unwrap().contains("silent"));
-        let balanced = resolve(Mode::Balanced, None, &presets, &[]).unwrap();
-        assert!(balanced.fan.firmware && balanced.fan.note.is_none());
+        for mode in [Mode::Silent, Mode::Balanced, Mode::Performance] {
+            let profile = resolve(mode, None, &presets, &[]).unwrap();
+            assert!(
+                profile.fan.firmware && profile.fan.preset.is_none(),
+                "{mode}"
+            );
+            assert!(
+                profile.fan.note.is_none(),
+                "{mode}: no preset is the normal case"
+            );
+            assert_eq!(profile.fan.requested.as_deref(), mode.builtin().unwrap().1);
+        }
+        let balanced = FanPresets::from([("balanced".to_owned(), vec![curve(2)])]);
+        let profile = resolve(Mode::Balanced, None, &balanced, &[]).unwrap();
+        assert_eq!(profile.fan.preset.as_deref(), Some("balanced"));
         let with_default = resolve(Mode::Balanced, None, &presets, &[curve(2)]).unwrap();
         assert!(!with_default.fan.firmware);
     }
