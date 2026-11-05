@@ -14,7 +14,7 @@ use asusio_backends::{cpu_pstate, fan_hwmon, nvidia_nvml::Nvml};
 use asusio_discovery::{hwmon, sysfs};
 use asusio_types::SensorValue;
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     fs, io,
     path::{Path, PathBuf},
     time::{Duration, Instant},
@@ -296,6 +296,7 @@ fn voltages(profile: &BoardProfile) -> Vec<LabeledValue> {
 /// at low temperature stays listed.
 fn fan_headers(
     profile: Option<&BoardProfile>,
+    wiring: &BTreeMap<u8, u8>,
     seen: &mut BTreeSet<u8>,
     errors: &mut Vec<String>,
 ) -> (Vec<FanHeaderReading>, Vec<String>) {
@@ -319,7 +320,12 @@ fn fan_headers(
                 );
                 continue;
             }
-            let pwm_channel = header.map_or(Some(fan.channel), |h| h.pwm);
+            // The board profile decides, then what detection saw, then the chip's own
+            // pairing of fan input N with output N.
+            let pwm_channel = match header {
+                Some(h) => h.pwm,
+                None => wiring.get(&fan.channel).copied().or(Some(fan.channel)),
+            };
             let pwm = pwm_channel.and_then(|channel| {
                 controller
                     .pwm_channels
@@ -357,6 +363,8 @@ pub struct Sampler {
     core: PowerSampler,
     load: LoadSampler,
     seen: BTreeSet<u8>,
+    /// Fan input -> PWM output, from detection.
+    wiring: BTreeMap<u8, u8>,
     profile: Option<BoardProfile>,
     nvml: Option<Nvml>,
 }
@@ -369,13 +377,24 @@ impl Default for Sampler {
 
 impl Sampler {
     pub fn new() -> Self {
+        Self::with_profile(board::detect())
+    }
+
+    /// As [`new`](Self::new) but pretending the board has no profile, to see what an
+    /// unknown machine looks like. It only ever knows less, never more.
+    pub fn without_board_profile() -> Self {
+        Self::with_profile(None)
+    }
+
+    fn with_profile(profile: Option<BoardProfile>) -> Self {
         let powercap = Path::new(sysfs::POWERCAP);
         Self {
             package: PowerSampler::new(powercap, "package-0"),
             core: PowerSampler::new(powercap, "core"),
             load: LoadSampler { last: None },
             seen: BTreeSet::new(),
-            profile: board::detect(),
+            wiring: BTreeMap::new(),
+            profile,
             nvml: None,
         }
     }
@@ -384,10 +403,20 @@ impl Sampler {
         self.profile.as_ref()
     }
 
+    /// Tell the sampler which PWM output each fan input follows (from detection).
+    pub fn set_wiring(&mut self, wiring: BTreeMap<u8, u8>) {
+        self.wiring = wiring;
+    }
+
     /// Connected and unconnected fan headers without taking any other reading.
     pub fn headers(&mut self) -> (Vec<FanHeaderReading>, Vec<String>) {
         let mut errors = Vec::new();
-        fan_headers(self.profile.as_ref(), &mut self.seen, &mut errors)
+        fan_headers(
+            self.profile.as_ref(),
+            &self.wiring,
+            &mut self.seen,
+            &mut errors,
+        )
     }
 
     /// Prime the counters so the next [`read`](Self::read) has load and power.
@@ -406,8 +435,12 @@ impl Sampler {
         let tctl_celsius = tctl()
             .map_err(|error| errors.push(format!("Tctl: {error}")))
             .ok();
-        let (fans, unused_headers) =
-            fan_headers(self.profile.as_ref(), &mut self.seen, &mut errors);
+        let (fans, unused_headers) = fan_headers(
+            self.profile.as_ref(),
+            &self.wiring,
+            &mut self.seen,
+            &mut errors,
+        );
         if self.nvml.is_none() {
             self.nvml = Nvml::open().ok();
         }

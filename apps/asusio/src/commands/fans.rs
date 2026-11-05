@@ -13,6 +13,19 @@ pub fn run(action: FanAction) -> CliResult {
     match action {
         FanAction::Presets { socket, json } => return super::fan_presets::list(&socket, json),
         FanAction::Preset { socket, action } => return super::fan_presets::run(&socket, action),
+        FanAction::Detect {
+            socket,
+            execute,
+            json,
+        } => return super::fan_presets::detect(&socket, execute, json),
+        FanAction::Role { socket, pwm, role } => {
+            return super::fan_presets::role(&socket, pwm, role);
+        }
+        FanAction::Reset {
+            socket,
+            execute,
+            everything,
+        } => return super::fan_presets::reset(&socket, execute, everything),
         FanAction::List { json } => {
             let report = fan_hwmon::discover_fan_controllers(root)?;
             if json {
@@ -54,7 +67,7 @@ pub fn run(action: FanAction) -> CliResult {
             fan_hwmon::validate_channel(root, channel)?;
             println!("nct6799 pwm{channel}: firmware Smart Fan IV (enable=5)");
             if execute {
-                fan_hwmon::restore_firmware_auto(root, channel)?;
+                fan_hwmon::restore_firmware_auto(root, channel, None)?;
                 println!("Firmware automatic control restored");
             } else {
                 preview_only("change the fan");

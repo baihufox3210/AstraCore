@@ -4,7 +4,7 @@ use asusio_core::{
     lighting::{Availability, Config},
     service::{
         ServiceConfig, State,
-        ipc::{FanStatus, RestoreEntry, Status},
+        ipc::{FanDetection, FanStatus, RestoreEntry, Status},
     },
     telemetry::Sampler,
 };
@@ -39,6 +39,11 @@ pub struct Daemon {
     pub(crate) profile_error: Mutex<Option<String>>,
     /// The over-temperature guard has handed the curve channels back to firmware.
     pub(crate) thermal_hold: AtomicBool,
+    /// Fan detection is running: the fan loop must keep its hands off every output.
+    pub(crate) probing: AtomicBool,
+    /// The fan loop has stopped driving curves because of `probing`.
+    pub(crate) loop_paused: AtomicBool,
+    pub(crate) detect: Mutex<FanDetection>,
     /// Telemetry counters, the NVML session and headers seen spinning.
     pub(crate) sampler: Mutex<Sampler>,
 }
@@ -96,7 +101,7 @@ pub(crate) fn read_config(path: &Path, owner: Option<u32>) -> io::Result<Config>
 }
 
 impl Daemon {
-    pub fn new(config: ServiceConfig) -> io::Result<Self> {
+    pub fn new(config: ServiceConfig, sampler: Sampler) -> io::Result<Self> {
         let client_gid = config.client_group.as_deref().and_then(|name| {
             let gid = group_id(name);
             if gid.is_none() {
@@ -104,10 +109,6 @@ impl Daemon {
             }
             gid
         });
-        let sampler = Sampler::new();
-        // The board profile names the pump headers; curves must never drive them.
-        let pumps = sampler.profile().map(|p| p.pump_pwms()).unwrap_or_default();
-        config.check_pumps(&pumps)?;
         let state = State::load(&config.state_file)?;
         let fan_plan = FanPlan::resolve(None, &config.fan_presets, &config.fan_curves);
         Ok(Self {
@@ -115,6 +116,9 @@ impl Daemon {
             cpu: Mutex::new(()),
             profile_error: Mutex::new(None),
             thermal_hold: AtomicBool::new(false),
+            probing: AtomicBool::new(false),
+            loop_paused: AtomicBool::new(false),
+            detect: Mutex::new(FanDetection::idle()),
             sampler: Mutex::new(sampler),
             policy: Policy::new(effective_uid(), client_gid, config.allow_active_sessions),
             client_gid,

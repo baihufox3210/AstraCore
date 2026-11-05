@@ -98,7 +98,7 @@ fn has_active_session(uid: u32) -> bool {
         .is_ok_and(|text| text.lines().any(|line| line == "STATE=active"))
 }
 
-fn dispatch(daemon: &Daemon, caller: &Caller, request: Request) -> Response {
+fn dispatch(daemon: &Arc<Daemon>, caller: &Caller, request: Request) -> Response {
     match request {
         Request::Status => Response::from_result(Ok(daemon.status())),
         Request::SetLighting {
@@ -167,10 +167,16 @@ fn dispatch(daemon: &Daemon, caller: &Caller, request: Request) -> Response {
         Request::DeleteFanPreset { name, execute } => {
             Response::from_result(daemon.delete_fan_preset(name, execute))
         }
+        Request::DetectFans { execute } => Response::from_result(daemon.detect_fans(execute)),
+        Request::SetFanRole { pwm, role } => Response::from_result(daemon.set_fan_role(pwm, role)),
+        Request::ResetFans {
+            execute,
+            everything,
+        } => Response::from_result(daemon.reset_fans(execute, everything)),
     }
 }
 
-fn handle(daemon: &Daemon, stream: UnixStream) -> io::Result<()> {
+fn handle(daemon: &Arc<Daemon>, stream: UnixStream) -> io::Result<()> {
     stream.set_nonblocking(false)?;
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
     stream.set_write_timeout(Some(Duration::from_secs(5)))?;

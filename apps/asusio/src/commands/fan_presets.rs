@@ -1,12 +1,15 @@
-//! Fan presets through asusiod: list, save (applied at once when a profile uses them) and
-//! delete. Curves are validated by the daemon; a rejected preset changes nothing.
+//! Fan presets, detection, roles and reset through asusiod. Curves are validated by the
+//! daemon; a rejected request changes nothing.
 use crate::{
-    cli::PresetAction,
+    cli::{PresetAction, RoleArg},
     output::{CliResult, print_json},
 };
 use asusio_core::{
     fan_curve::FanCurve,
-    service::ipc::{self, FanPresetInfo, FanPresetResult, FanSetup, PresetSource, Request},
+    service::ipc::{
+        self, DetectState, FanChannelInfo, FanDetectResult, FanPresetInfo, FanPresetResult,
+        FanResetResult, FanRole, FanSetup, PresetSource, Request, RoleSource,
+    },
 };
 use std::path::Path;
 
@@ -46,8 +49,62 @@ fn describe_preset(preset: &FanPresetInfo, active: Option<&str>) {
             modes.join(", ")
         }
     );
+    if let Some(problem) = &preset.problem {
+        println!("      not applied on this machine: {problem}");
+    }
     for curve in &preset.curves {
         println!("      {}", describe_curve(curve));
+    }
+}
+
+fn role_name(role: FanRole) -> &'static str {
+    match role {
+        FanRole::Fan => "fan",
+        FanRole::Pump => "pump",
+    }
+}
+
+fn describe_channel(channel: &FanChannelInfo) {
+    let state = if channel.connected {
+        "connected"
+    } else {
+        "nothing connected"
+    };
+    let role = match (channel.role, channel.role_source) {
+        (Some(role), Some(RoleSource::Board)) => format!("{} (board profile)", role_name(role)),
+        (Some(role), _) => format!("{} (confirmed)", role_name(role)),
+        (None, _) => match channel.suggested_role {
+            Some(suggested) => format!("unconfirmed, detection suggests {}", role_name(suggested)),
+            None => "unconfirmed".to_owned(),
+        },
+    };
+    println!(
+        "  pwm{}: {} ({state}) - {role}",
+        channel.pwm,
+        channel.headers.join(" + ")
+    );
+    if let Some(note) = channel.probe.as_ref().and_then(|probe| probe.note.as_ref()) {
+        println!("         {note}");
+    }
+}
+
+fn print_detection(setup: &FanSetup) {
+    let detection = &setup.detection;
+    match detection.state {
+        DetectState::Idle => {}
+        DetectState::Running => println!(
+            "Detection running: {} of {} outputs done{}",
+            detection.done,
+            detection.total,
+            detection
+                .pwm
+                .map_or_else(String::new, |pwm| format!(", testing pwm{pwm}"))
+        ),
+        DetectState::Finished | DetectState::Failed => {
+            if let Some(message) = &detection.message {
+                println!("Last detection: {message}");
+            }
+        }
     }
 }
 
@@ -56,27 +113,34 @@ pub fn list(socket: &Path, json: bool) -> CliResult {
     if json {
         return print_json(serde_json::to_value(&setup)?);
     }
-    println!("Board: {}", setup.board.as_deref().unwrap_or("unknown"));
+    println!(
+        "Fan chip: {}{}",
+        setup.controller.as_deref().unwrap_or("none found"),
+        if setup.controller.is_some() && !setup.controller_verified {
+            " (not yet verified on real hardware; test with care)"
+        } else {
+            ""
+        }
+    );
+    println!(
+        "Board: {}",
+        setup.board.as_deref().unwrap_or("no board profile")
+    );
     match &setup.reason {
-        Some(reason) => println!("Curves cannot be edited: {reason}"),
+        Some(reason) => println!("Curves cannot be edited yet: {reason}"),
         None => println!("Curves can be edited"),
     }
+    if setup.needs_detection {
+        println!("No board profile and no detection result: run `asusio fans detect --execute`");
+    }
+    print_detection(&setup);
     if setup.thermal_hold {
         println!(
             "Thermal protection is active: curves are handed back to firmware until the CPU cools down"
         );
     }
     for channel in &setup.channels {
-        let state = match (channel.available, channel.connected) {
-            (false, _) => "not exposed by the kernel",
-            (true, true) => "connected",
-            (true, false) => "nothing connected",
-        };
-        println!(
-            "  pwm{}: {} ({state})",
-            channel.pwm,
-            channel.headers.join(" + ")
-        );
+        describe_channel(channel);
     }
     if setup.presets.is_empty() {
         println!("No fan presets; fans stay under firmware control");
@@ -157,4 +221,87 @@ pub fn run(socket: &Path, action: PresetAction) -> CliResult {
             print_result(&result, false, false)
         }
     }
+}
+
+pub fn detect(socket: &Path, execute: bool, json: bool) -> CliResult {
+    let result: FanDetectResult = ipc::call(socket, &Request::DetectFans { execute })?;
+    if json {
+        return print_json(serde_json::to_value(&result)?);
+    }
+    for item in &result.plan {
+        match (&item.reason, item.will_test) {
+            (None, true) => println!(
+                "  pwm{}: firmware duty {}%, will be raised",
+                item.pwm, item.baseline_percent
+            ),
+            (Some(reason), _) => println!(
+                "  pwm{}: firmware duty {}%, skipped: {reason}",
+                item.pwm, item.baseline_percent
+            ),
+            (None, false) => {}
+        }
+    }
+    if !result.executed {
+        println!(
+            "Preview only. Detection raises the speed of the listed outputs one at a time for about {} seconds in total, then restores them; add --execute to start it",
+            result.estimated_seconds
+        );
+        return Ok(());
+    }
+    println!("Detection started in asusiod; follow it with `asusio fans presets`");
+    Ok(())
+}
+
+pub fn role(socket: &Path, pwm: u8, role: RoleArg) -> CliResult {
+    let role = match role {
+        RoleArg::Fan => Some(FanRole::Fan),
+        RoleArg::Pump => Some(FanRole::Pump),
+        RoleArg::None => None,
+    };
+    let setup: FanSetup = ipc::call(socket, &Request::SetFanRole { pwm, role })?;
+    match role {
+        Some(role) => println!("pwm{pwm} confirmed as a {}", role_name(role)),
+        None => println!("pwm{pwm}: confirmation removed"),
+    }
+    for channel in setup.channels.iter().filter(|c| c.pwm == pwm) {
+        describe_channel(channel);
+    }
+    Ok(())
+}
+
+pub fn reset(socket: &Path, execute: bool, everything: bool) -> CliResult {
+    let result: FanResetResult = ipc::call(
+        socket,
+        &Request::ResetFans {
+            execute,
+            everything,
+        },
+    )?;
+    if result.removed_presets.is_empty() {
+        println!("No saved presets");
+    } else {
+        println!("Saved presets: {}", result.removed_presets.join(", "));
+    }
+    if everything {
+        println!("The detection result and the confirmed roles are forgotten as well");
+    }
+    if !result.executed {
+        println!("Preview only; --execute deletes them and returns the fans to firmware control");
+        return Ok(());
+    }
+    for error in &result.release_errors {
+        eprintln!("warning: could not hand back {error}");
+    }
+    if !result.release_errors.is_empty() {
+        println!("Saved presets were deleted, but not every fan could be handed back to firmware");
+    } else if result.released.is_empty() {
+        println!("Reset done; the fans are under firmware control");
+    } else {
+        let outputs: Vec<_> = result.released.iter().map(|p| format!("pwm{p}")).collect();
+        println!(
+            "Reset done; returned to firmware control: {}",
+            outputs.join(", ")
+        );
+    }
+    Ok(())
 }

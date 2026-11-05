@@ -1,9 +1,10 @@
 //! Fan-curve loop. Any error hands the channel back to firmware control, and an
 //! independent over-temperature guard does the same whatever the curves say.
 use crate::{daemon::Daemon, signals};
+use asusio_backends::fan_hwmon;
 use asusio_core::{
     fan_curve::{
-        CurveController, FanCurve, GuardAction, HwmonTemperature, Nct6799Pwm, PwmOutput,
+        CurveController, FanCurve, GuardAction, HwmonPwm, HwmonTemperature, PwmOutput,
         THERMAL_RELEASE_CELSIUS, ThermalGuard,
     },
     service::ipc::{FanState, FanStatus},
@@ -11,13 +12,30 @@ use asusio_core::{
 };
 use std::{io, sync::atomic::Ordering, time::Duration};
 
-type Controller = CurveController<HwmonTemperature, Nct6799Pwm>;
+type Controller = CurveController<HwmonTemperature, HwmonPwm>;
 
-fn controller(curve: &FanCurve) -> io::Result<Controller> {
+/// Take over one output: remember the firmware's mode first, and refuse when it could not
+/// be handed back (an unverified chip whose mode was not seen before).
+fn controller(daemon: &Daemon, curve: &FanCurve) -> io::Result<Controller> {
+    daemon.record_firmware_modes(&[curve.channel])?;
+    let recorded = daemon.firmware_enable(curve.channel);
+    if recorded.is_none() {
+        let name =
+            fan_hwmon::controller_name(std::path::Path::new(asusio_discovery::sysfs::HWMON))?;
+        if fan_hwmon::default_firmware_enable(&name).is_none() {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                format!(
+                    "pwm{} is under manual control and {name} has no known firmware mode to return to",
+                    curve.channel
+                ),
+            ));
+        }
+    }
     CurveController::new(
         curve.clone(),
         HwmonTemperature::new(curve.sensor.clone()),
-        Nct6799Pwm::new(curve.channel)?,
+        HwmonPwm::with_firmware_enable(curve.channel, recorded)?,
     )
 }
 
@@ -44,7 +62,7 @@ fn start(daemon: &Daemon, curves: &[FanCurve]) -> Vec<Option<Controller>> {
     let mut controllers = Vec::new();
     let mut statuses = Vec::new();
     for curve in curves {
-        let (controller, state) = match controller(curve) {
+        let (controller, state) = match controller(daemon, curve) {
             Ok(controller) => (Some(controller), FanState::Starting),
             Err(error) => (
                 None,
@@ -100,8 +118,33 @@ pub fn run(daemon: &Daemon) {
     let mut controllers = start(daemon, &curves);
     let interval = Duration::from_millis(daemon.config.fan_interval_ms);
     let thermal_reason = format!("CPU above {THERMAL_RELEASE_CELSIUS} °C: firmware control");
+    let mut paused = false;
 
     loop {
+        // Fan detection owns the outputs while it runs: hand every curve back to firmware,
+        // say so, and wait. Curves restart from scratch afterwards.
+        if daemon.probing.load(Ordering::SeqCst) {
+            if !paused {
+                stop(&mut controllers, "fan detection");
+                controllers = Vec::new();
+                publish_released(daemon, &curves, "fan detection is running");
+                paused = true;
+            }
+            daemon.loop_paused.store(true, Ordering::SeqCst);
+            if !signals::sleep(interval) {
+                break;
+            }
+            continue;
+        }
+        if paused {
+            paused = false;
+            daemon.loop_paused.store(false, Ordering::SeqCst);
+            controllers = if guard.held() {
+                Vec::new()
+            } else {
+                start(daemon, &curves)
+            };
+        }
         let (current, plan) = daemon.fan_plan();
         if current != generation {
             stop(&mut controllers, "fan preset changed");
@@ -152,13 +195,22 @@ pub fn run(daemon: &Daemon) {
     stop(&mut controllers, "daemon stopping");
 }
 
-/// Release every channel any curve may have driven; used after the daemon exits for any
-/// reason.
-pub fn release_all(channels: &[u8]) -> io::Result<()> {
+/// Release every channel any curve may have driven, each to the firmware mode recorded
+/// for it; used after the daemon exits for any reason. A channel the machine no longer has
+/// (the state file moved to other hardware) is skipped, not an error.
+pub fn release_all(
+    channels: &[u8],
+    recorded: &std::collections::BTreeMap<u8, u8>,
+) -> io::Result<()> {
     let mut failures = Vec::new();
     for &channel in channels {
-        match Nct6799Pwm::new(channel).and_then(|mut pwm| pwm.release()) {
+        let result = HwmonPwm::with_firmware_enable(channel, recorded.get(&channel).copied())
+            .and_then(|mut pwm| pwm.release());
+        match result {
             Ok(()) => eprintln!("fans: pwm{channel} returned to firmware control"),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                eprintln!("fans: pwm{channel} is not present; skipped");
+            }
             Err(error) => failures.push(format!("pwm{channel}: {error}")),
         }
     }

@@ -521,7 +521,8 @@ a shared machine, set `"allow_active_sessions": false`; the socket then becomes
 not write hardware. The IPC protocol (`asusio_core::service::ipc`) is
 newline-delimited JSON with one request per connection. Methods: `status`,
 `set_lighting`, `set_sync`, `set_lighting_mode`, `get_lighting`, `restore_lighting`,
-`get_profiles`, `set_profile`, `telemetry`, `get_fans`, `set_fan_preset` and `delete_fan_preset`.
+`get_profiles`, `set_profile`, `telemetry`, `get_fans`, `set_fan_preset`, `delete_fan_preset`,
+`detect_fans`, `set_fan_role` and `reset_fans`.
 Setting a profile (`set_profile` with `execute`) is a hardware write and is
 authorized like lighting writes.
 
@@ -565,8 +566,57 @@ handed back to firmware; the curves resume once the temperature is at or below 8
 the guard off.
 
 A rejected preset changes nothing. `--release-fans` (run by `ExecStopPost` after any exit
-or crash) releases the channels of the configuration, of every saved preset and of every
-fan header of the board profile, so a crash cannot leave a fan at a manual duty.
+or crash) releases the outputs of the configuration, of every saved preset and of every
+output asusiod ever took over, each to the firmware mode recorded for it, so a crash cannot
+leave a fan at a manual duty. Outputs that were never touched are left alone.
+
+### Any machine: detection, roles, permanence and reset
+
+Nothing above depends on a particular board. Fan outputs and inputs are read from the fan
+chip's hwmon driver (Nuvoton `nct6*` or ITE `it8*`; only `nct6799` has been checked on real
+hardware, so `fans presets` flags other chips). A board profile in `hardware/boards/` only
+adds names, pump marks and voltages when the DMI board name matches exactly.
+
+**Detection** finds which fan inputs follow which PWM output (including outputs shared by
+two headers) without a profile. `asusio fans detect` previews it; `--execute` starts it in
+asusiod. Every output that is not a pump is raised in turn (never lowered), watched for
+12 seconds and restored, about 25 seconds per output. It skips outputs the firmware already
+runs near full speed (a pump is often run that way) and outputs another program controls,
+stops and restores at 85 °C or when the temperature cannot be read, and the fan loop hands
+its curves back while it runs. The result is saved and shown in `fans presets` and the
+telemetry (`shares_pwm_with`, the `pwm` of each header).
+
+**Roles.** An output can only be given a curve once it is known to be a fan. The board
+profile says so for a known board (and cannot be overridden). On any other machine the user
+confirms it: `asusio fans role 4 fan`, `asusio fans role 1 pump`, `asusio fans role 4 none`.
+Detection only suggests (a fast input, or an output already at full speed, suggests a pump).
+Nothing assumes "fan" on its own, because a curve that slows a pump to 30% could overheat the
+CPU. An output without a role is refused, and so is a pump.
+
+**Firmware modes.** Before an output is first taken over, asusiod records its `pwmN_enable`
+and restores exactly that on release, instead of a fixed value. Only `nct6799` has a known
+default; any other chip whose mode was not recorded is refused rather than guessed.
+
+**Other hardware.** The state file carries a fingerprint of the board and fan chip. If it
+turns up on a different machine, the recorded roles, detection result and firmware modes are
+dropped at start (they could be wrong there); saved presets are kept. They are not applied
+(`fans presets` says why) until their outputs are confirmed as fans on the new machine.
+
+**Permanence.** Saved presets live in `/var/lib/asusio/state.json`. They never expire, are
+not touched by detection, profile changes, upgrades or `pacman -R` (which keeps the
+directory), and come back at every boot.
+
+**Reset to the system defaults.** `asusio fans reset [--everything] [--execute]` deletes every
+saved preset, clears a custom profile's reference to one, and hands the fans back to firmware
+control at once. `--everything` also forgets the detection result and confirmed roles. The
+configuration file and board profiles are not touched.
+
+```bash
+asusio fans detect --execute      # background; follow it in `asusio fans presets`
+asusio fans role 4 fan            # confirm what is connected (unknown boards)
+asusio fans reset --execute       # back to firmware control, saved presets deleted
+asusiod --no-board-profile        # diagnostic: behave as on an unknown board
+```
 
 ## Library architecture and integration
 
@@ -591,6 +641,8 @@ lighting orchestration; applications own argument parsing and presentation.
 | `asusio_core::cpu_profile` | Built-in and custom CPU profiles, fan-preset resolution |
 | `asusio_core::telemetry` | Read-only live readings: CPU, memory, voltages, fan headers, GPUs, sched_ext |
 | `asusio_core::board` | Embedded board profiles: fan headers, pumps, voltage names and scaling |
+| `asusio_core::fan_map` | Fan knowledge of the machine: detection results, roles, hardware fingerprint |
+| `asusio_core::fan_probe` | Detection of which fan inputs follow which output, over an abstract chip |
 | `asusio_backends::nvidia_nvml` | Read-only NVIDIA GPU readings through NVML, loaded at runtime |
 | `asusio_backends::cpu_pstate` | Verified amd-pstate-epp governor/EPP/boost writes with rollback |
 | `asusio-hal` | `TemperatureSensor` / `PwmOutput` traits used by control loops |

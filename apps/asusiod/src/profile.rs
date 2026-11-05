@@ -130,7 +130,56 @@ impl Daemon {
     }
 
     pub fn telemetry(&self) -> Telemetry {
-        let mut telemetry = lock(&self.sampler).read();
+        let (map, confirmed) = {
+            let state = lock(&self.state);
+            (state.fan_map.clone(), state.fan_roles.clone())
+        };
+        // Which output each fan input follows, as detection saw it.
+        let wiring: std::collections::BTreeMap<u8, u8> = map
+            .iter()
+            .flat_map(|map| &map.channels)
+            .flat_map(|channel| channel.tachs.iter().map(|t| (t.tach, channel.pwm)))
+            .collect();
+        let (mut telemetry, profile) = {
+            let mut sampler = lock(&self.sampler);
+            sampler.set_wiring(wiring);
+            (sampler.read(), sampler.profile().cloned())
+        };
+        let roles = asusio_core::fan_map::effective_roles(profile.as_ref(), &confirmed);
+        let names: Vec<(u8, String)> = telemetry
+            .fans
+            .iter()
+            .map(|h| {
+                (
+                    h.channel,
+                    h.header
+                        .clone()
+                        .unwrap_or_else(|| format!("fan{}", h.channel)),
+                )
+            })
+            .collect();
+        for header in &mut telemetry.fans {
+            let pwm = header.pwm.as_ref().map(|p| p.channel);
+            if header.kind == asusio_core::service::ipc::FanKind::Unknown
+                && let Some((role, _)) = pwm.and_then(|p| roles.get(&p))
+            {
+                header.kind = match role {
+                    asusio_core::fan_map::FanRole::Fan => asusio_core::service::ipc::FanKind::Fan,
+                    asusio_core::fan_map::FanRole::Pump => asusio_core::service::ipc::FanKind::Pump,
+                };
+            }
+            // Another fan input on the same output, when detection saw one.
+            if header.shares_pwm_with.is_none()
+                && let Some(channel) = pwm.and_then(|p| map.as_ref().and_then(|m| m.channel(p)))
+            {
+                header.shares_pwm_with = channel
+                    .tachs
+                    .iter()
+                    .filter(|t| t.tach != header.channel)
+                    .find_map(|t| names.iter().find(|(tach, _)| *tach == t.tach))
+                    .map(|(_, name)| name.clone());
+            }
+        }
         telemetry.mode = self.recorded_profile().map(|p| p.mode);
         telemetry.in_sync = self.in_sync(&telemetry.cpu);
         telemetry.fan = Some(lock(&self.fan_plan).1.clone());

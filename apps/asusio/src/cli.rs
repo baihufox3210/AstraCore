@@ -8,7 +8,7 @@ use asusio_core::{
     service::LightingMode,
 };
 use asusio_types::Rgb;
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -120,6 +120,39 @@ pub enum FanAction {
         #[arg(long)]
         json: bool,
     },
+    /// Find which fan inputs follow which PWM output: every output that is not a pump is
+    /// raised in turn (never lowered) and restored; runs in asusiod and takes about 25
+    /// seconds per output
+    Detect {
+        #[arg(long, default_value = asusio_core::service::DEFAULT_SOCKET)]
+        socket: PathBuf,
+        /// Start it; without this only the plan is shown
+        #[arg(long)]
+        execute: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Confirm what is connected to a PWM output; an output nobody has identified cannot
+    /// be given a curve, because it could be a pump
+    Role {
+        #[arg(long, default_value = asusio_core::service::DEFAULT_SOCKET)]
+        socket: PathBuf,
+        pwm: u8,
+        /// fan, pump, or none to remove the confirmation
+        #[arg(value_enum)]
+        role: RoleArg,
+    },
+    /// Reset to the system defaults: delete every saved preset and return the fans to
+    /// firmware control
+    Reset {
+        #[arg(long, default_value = asusio_core::service::DEFAULT_SOCKET)]
+        socket: PathBuf,
+        #[arg(long)]
+        execute: bool,
+        /// Also forget the detection result and the confirmed roles
+        #[arg(long)]
+        everything: bool,
+    },
     /// Save or delete a fan preset through asusiod; no sudo, and a saved preset that the
     /// active profile uses drives the fans at once
     Preset {
@@ -128,6 +161,13 @@ pub enum FanAction {
         #[command(subcommand)]
         action: PresetAction,
     },
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+pub enum RoleArg {
+    Fan,
+    Pump,
+    None,
 }
 
 #[derive(Subcommand)]

@@ -47,8 +47,8 @@ fn default_hysteresis() -> f64 {
     3.0
 }
 
-/// A curve for one nct6799 PWM channel. The channel-to-header mapping must be verified
-/// by the user; asusio does not infer it.
+/// A curve for one PWM channel of the system's fan controller. The channel-to-header
+/// mapping comes from the board profile or from detection; asusio does not guess it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct FanCurve {
@@ -293,22 +293,34 @@ impl TemperatureSensor for HwmonTemperature {
     }
 }
 
-/// One nct6799 PWM channel through the validated sysfs backend.
-pub struct Nct6799Pwm {
+/// One PWM channel of the system's fan controller through the validated sysfs backend.
+/// `firmware_enable` is the `pwmN_enable` value the firmware had set before the channel was
+/// taken over; [`release`](PwmOutput::release) restores it.
+pub struct HwmonPwm {
     channel: u8,
+    firmware_enable: Option<u8>,
 }
 
-impl Nct6799Pwm {
-    /// Fails unless exactly one controller exposes this channel.
+impl HwmonPwm {
+    /// Fails unless exactly one controller exposes this channel. Without a recorded
+    /// firmware mode only a verified controller can be handed back.
     pub fn new(channel: u8) -> io::Result<Self> {
+        Self::with_firmware_enable(channel, None)
+    }
+
+    /// As [`new`](Self::new), restoring `firmware_enable` on release.
+    pub fn with_firmware_enable(channel: u8, firmware_enable: Option<u8>) -> io::Result<Self> {
         fan_hwmon::validate_channel(Path::new(sysfs::HWMON), channel)?;
-        Ok(Self { channel })
+        Ok(Self {
+            channel,
+            firmware_enable,
+        })
     }
 }
 
-impl PwmOutput for Nct6799Pwm {
+impl PwmOutput for HwmonPwm {
     fn describe(&self) -> String {
-        format!("nct6799 pwm{}", self.channel)
+        format!("pwm{}", self.channel)
     }
 
     fn set_percent(&mut self, percent: u8) -> io::Result<()> {
@@ -316,7 +328,11 @@ impl PwmOutput for Nct6799Pwm {
     }
 
     fn release(&mut self) -> io::Result<()> {
-        fan_hwmon::restore_firmware_auto(Path::new(sysfs::HWMON), self.channel)
+        fan_hwmon::restore_firmware_auto(
+            Path::new(sysfs::HWMON),
+            self.channel,
+            self.firmware_enable,
+        )
     }
 }
 

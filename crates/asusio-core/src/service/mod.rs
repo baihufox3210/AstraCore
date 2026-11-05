@@ -4,6 +4,7 @@ pub mod ipc;
 use crate::{
     cpu_profile::{self, Custom, FanPresets, Mode},
     fan_curve::FanCurve,
+    fan_map::{FanMap, FanRole},
     lighting::{Effect, Request},
     persist,
 };
@@ -258,9 +259,40 @@ pub struct State {
     /// same name. Validated with the stricter socket rules before they are stored.
     #[serde(default)]
     pub user_fan_presets: FanPresets,
+    /// The machine the four fields below were learned on (board and fan chip). When the
+    /// state file turns up on other hardware they are discarded; saved presets are kept.
+    #[serde(default)]
+    pub fan_fingerprint: Option<String>,
+    /// Result of the last fan detection.
+    #[serde(default)]
+    pub fan_map: Option<FanMap>,
+    /// Outputs the user confirmed as fan or pump (the board profile, when there is one,
+    /// decides first).
+    #[serde(default)]
+    pub fan_roles: BTreeMap<u8, FanRole>,
+    /// `pwmN_enable` of each output before asusiod first took it over; restored on release.
+    #[serde(default)]
+    pub firmware_enable: BTreeMap<u8, u8>,
 }
 
 impl State {
+    /// Tie the fan knowledge to `fingerprint`. On other hardware it is discarded (a role or a
+    /// firmware mode learned elsewhere could be wrong here); saved presets are never touched.
+    /// Returns whether anything was discarded.
+    pub fn bind_fan_hardware(&mut self, fingerprint: &str) -> bool {
+        if self.fan_fingerprint.as_deref() == Some(fingerprint) {
+            return false;
+        }
+        let had_knowledge = self.fan_map.is_some()
+            || !self.fan_roles.is_empty()
+            || !self.firmware_enable.is_empty();
+        self.fan_fingerprint = Some(fingerprint.to_owned());
+        self.fan_map = None;
+        self.fan_roles.clear();
+        self.firmware_enable.clear();
+        had_knowledge
+    }
+
     /// What the current mode wants `alias` to show, if anything is recorded.
     pub fn desired(&self, alias: &str) -> Option<LightingState> {
         match self.lighting_mode {
@@ -399,6 +431,32 @@ mod tests {
             presets.validate().is_err(),
             "preset curves must end at 100%"
         );
+    }
+
+    #[test]
+    fn moving_the_state_to_other_hardware_keeps_presets_and_drops_fan_knowledge() {
+        let mut state = State::default();
+        assert!(
+            !state.bind_fan_hardware("aaaa"),
+            "first binding discards nothing"
+        );
+        state.fan_roles.insert(2, FanRole::Fan);
+        state.firmware_enable.insert(2, 5);
+        state.fan_map = Some(FanMap {
+            taken_unix: 1,
+            channels: Vec::new(),
+        });
+        state.user_fan_presets.insert("quiet".into(), Vec::new());
+        assert!(!state.bind_fan_hardware("aaaa"), "same machine");
+        assert!(state.fan_roles.contains_key(&2));
+        assert!(state.bind_fan_hardware("bbbb"), "other machine");
+        assert!(state.fan_roles.is_empty() && state.firmware_enable.is_empty());
+        assert!(state.fan_map.is_none());
+        assert!(
+            state.user_fan_presets.contains_key("quiet"),
+            "presets are permanent"
+        );
+        assert_eq!(state.fan_fingerprint.as_deref(), Some("bbbb"));
     }
 
     #[test]

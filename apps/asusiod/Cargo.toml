@@ -5,6 +5,7 @@ license.workspace = true
 version.workspace = true
 
 [dependencies]
+asusio-backends = { path = "../../crates/asusio-backends" }
 asusio-core = { path = "../../crates/asusio-core" }
 asusio-discovery = { path = "../../crates/asusio-discovery" }
 asusio-policy = { path = "../../crates/asusio-policy" }

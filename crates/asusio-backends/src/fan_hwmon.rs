@@ -1,4 +1,7 @@
-//! Fan controls exposed by the verified nct6799 hwmon driver.
+//! Fan tachometers and PWM outputs of Super I/O hardware-monitor chips (Nuvoton `nct6*` and
+//! ITE `it8*` families), read through their hwmon drivers. Only `nct6799` has been verified
+//! on real hardware; other chips are accepted but their firmware automatic mode is never
+//! guessed (see [`default_firmware_enable`]).
 //! Fan tachometer numbers do not establish a PWM-to-header mapping.
 
 use asusio_types::{DiscoveryReport, DiscoveryWarning};
@@ -8,7 +11,26 @@ use std::{
     path::{Path, PathBuf},
 };
 
-const CONTROLLER: &str = "nct6799";
+/// The only controller whose behavior has been checked on real hardware.
+const VERIFIED_CONTROLLER: &str = "nct6799";
+
+/// Whether an hwmon `name` is a Super I/O chip this module drives: `nct6*` (Nuvoton) or
+/// `it8*` (ITE). Other hwmon devices that happen to have `pwmN` files (GPU, laptop
+/// firmware) are not touched.
+pub fn is_supported_controller(name: &str) -> bool {
+    name.starts_with("nct6") || name.starts_with("it8")
+}
+
+pub fn is_verified_controller(name: &str) -> bool {
+    name == VERIFIED_CONTROLLER
+}
+
+/// The `pwmN_enable` value that means "firmware automatic control", only where it has been
+/// observed on real hardware (`nct6799`: 5, Smart Fan IV). For any other chip the value
+/// must have been recorded from the channel before it was taken over.
+pub fn default_firmware_enable(controller: &str) -> Option<u8> {
+    is_verified_controller(controller).then_some(5)
+}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct FanSpeed {
@@ -62,12 +84,13 @@ pub fn discover_fan_controllers(root: &Path) -> io::Result<DiscoveryReport<FanCo
         let Ok(name) = fs::read_to_string(path.join("name")) else {
             continue;
         };
-        if name.trim() != CONTROLLER {
+        let name = name.trim().to_owned();
+        if !is_supported_controller(&name) {
             continue;
         }
 
         let mut controller = FanController {
-            name: CONTROLLER.to_owned(),
+            name,
             sysfs_path: path.clone(),
             fan_speeds: Vec::new(),
             pwm_channels: Vec::new(),
@@ -113,12 +136,16 @@ pub fn discover_fan_controllers(root: &Path) -> io::Result<DiscoveryReport<FanCo
     Ok(report)
 }
 
-fn selected_channel(root: &Path, channel: u8) -> io::Result<(PathBuf, PwmChannel)> {
+/// The controller name, hwmon directory and PWM state of `channel`.
+fn selected_channel(root: &Path, channel: u8) -> io::Result<(String, PathBuf, PwmChannel)> {
     let report = discover_fan_controllers(root)?;
     if report.devices.len() != 1 {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
-            "expected one nct6799 controller",
+            format!(
+                "expected exactly one supported fan controller, found {}",
+                report.devices.len()
+            ),
         ));
     }
     let controller = &report.devices[0];
@@ -127,7 +154,31 @@ fn selected_channel(root: &Path, channel: u8) -> io::Result<(PathBuf, PwmChannel
         .iter()
         .find(|pwm| pwm.channel == channel)
         .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "PWM channel not available"))?;
-    Ok((controller.sysfs_path.clone(), pwm.clone()))
+    Ok((
+        controller.name.clone(),
+        controller.sysfs_path.clone(),
+        pwm.clone(),
+    ))
+}
+
+/// The current `pwmN_enable` of a channel (0 = no control, 1 = manual, higher = automatic).
+pub fn current_enable(root: &Path, channel: u8) -> io::Result<u8> {
+    selected_channel(root, channel).map(|(_, _, pwm)| pwm.enable)
+}
+
+/// The supported controller's name, or an error unless exactly one exists.
+pub fn controller_name(root: &Path) -> io::Result<String> {
+    let report = discover_fan_controllers(root)?;
+    match report.devices.as_slice() {
+        [only] => Ok(only.name.clone()),
+        other => Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!(
+                "expected exactly one supported fan controller, found {}",
+                other.len()
+            ),
+        )),
+    }
 }
 
 /// Check that exactly one controller exposes `channel`, without writing anything.
@@ -195,8 +246,8 @@ fn apply_manual(io: &impl PwmIo, path: &Path, pwm: &PwmChannel, raw: u8) -> io::
 /// The caller must map the channel to a physical fan before invoking this.
 pub fn set_manual(root: &Path, channel: u8, percent: u8) -> io::Result<()> {
     let raw = manual_duty(percent)?;
-    let (path, pwm) = selected_channel(root, channel)?;
-    if !(1..=5).contains(&pwm.enable) {
+    let (_, path, pwm) = selected_channel(root, channel)?;
+    if pwm.enable > 5 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "unexpected PWM control mode",
@@ -205,12 +256,25 @@ pub fn set_manual(root: &Path, channel: u8, percent: u8) -> io::Result<()> {
     apply_manual(&SysfsPwmIo, &path, &pwm, raw)
 }
 
-/// Return one channel to the Smart Fan IV mode observed on this controller.
-pub fn restore_firmware_auto(root: &Path, channel: u8) -> io::Result<()> {
-    let (path, _) = selected_channel(root, channel)?;
+/// Return one channel to the mode the firmware had it in. `recorded` is the `pwmN_enable`
+/// value saved before the channel was taken over; without one, only a verified controller
+/// has a known default. A guess could change a pump's speed, so none is made.
+pub fn restore_firmware_auto(root: &Path, channel: u8, recorded: Option<u8>) -> io::Result<()> {
+    let (name, path, _) = selected_channel(root, channel)?;
+    let mode = recorded
+        .or_else(|| default_firmware_enable(&name))
+        .filter(|mode| *mode != 1)
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::Unsupported,
+                format!(
+                    "the firmware mode of pwm{channel} on {name} was not recorded and has no known default"
+                ),
+            )
+        })?;
     let enable_path = path.join(format!("pwm{channel}_enable"));
-    fs::write(&enable_path, "5")?;
-    if read_number::<u8>(&enable_path)? != 5 {
+    fs::write(&enable_path, mode.to_string())?;
+    if read_number::<u8>(&enable_path)? != mode {
         return Err(io::Error::other("firmware automatic mode readback failed"));
     }
     Ok(())
@@ -255,6 +319,42 @@ mod tests {
     }
 
     #[test]
+    fn supports_nuvoton_and_ite_chips_only() {
+        for name in ["nct6799", "nct6775", "nct6687", "it8688", "it8613"] {
+            assert!(is_supported_controller(name), "{name}");
+        }
+        for name in ["amdgpu", "asus", "k10temp", "thinkpad", "nvme", "coretemp"] {
+            assert!(!is_supported_controller(name), "{name}");
+        }
+        assert_eq!(default_firmware_enable("nct6799"), Some(5));
+        assert_eq!(default_firmware_enable("it8688"), None, "never guessed");
+    }
+
+    #[test]
+    fn firmware_mode_is_restored_from_the_recorded_value() {
+        let fixture = Fixture::new();
+        fs::write(fixture.attr("pwm2_enable"), "1\n").unwrap();
+        restore_firmware_auto(&fixture.0, 2, Some(2)).unwrap();
+        assert_eq!(
+            fs::read_to_string(fixture.attr("pwm2_enable")).unwrap(),
+            "2"
+        );
+        assert!(
+            restore_firmware_auto(&fixture.0, 2, Some(1)).is_err(),
+            "manual is not a firmware mode"
+        );
+        // An unverified chip without a recorded value is refused rather than guessed.
+        fs::write(fixture.attr("name"), "it8688\n").unwrap();
+        let error = restore_firmware_auto(&fixture.0, 2, None).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::Unsupported);
+        restore_firmware_auto(&fixture.0, 2, Some(0)).unwrap();
+        assert_eq!(
+            fs::read_to_string(fixture.attr("pwm2_enable")).unwrap(),
+            "0"
+        );
+    }
+
+    #[test]
     fn lists_only_existing_channels_without_assuming_fan_mapping() {
         let fixture = Fixture::new();
         let report = discover_fan_controllers(&fixture.0).unwrap();
@@ -275,7 +375,7 @@ mod tests {
             fs::read_to_string(fixture.attr("pwm2_enable")).unwrap(),
             "1"
         );
-        restore_firmware_auto(&fixture.0, 2).unwrap();
+        restore_firmware_auto(&fixture.0, 2, None).unwrap();
         assert_eq!(
             fs::read_to_string(fixture.attr("pwm2_enable")).unwrap(),
             "5"

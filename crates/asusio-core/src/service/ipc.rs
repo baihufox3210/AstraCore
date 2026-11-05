@@ -1,9 +1,11 @@
 //! Newline-delimited JSON protocol between clients (CLI, GUI) and `asusiod`.
 //! One request and one response per connection.
 pub use crate::board::FanKind;
+pub use crate::fan_map::{FanRole, RoleSource};
 use crate::{
     cpu_profile::{Custom, FanPlan, Mode, Profile},
     fan_curve::FanCurve,
+    fan_map::ProbedChannel,
     lighting::{Availability, Effect, EffectInfo, TargetKind},
     service::{LightingMode, LightingState},
 };
@@ -92,6 +94,25 @@ pub enum Request {
         name: String,
         execute: bool,
     },
+    /// Preview, or with `execute` start, fan detection: every PWM output that is not a
+    /// pump is raised in turn (never lowered) and restored, to see which fan inputs follow
+    /// it. It runs in the background; follow it in [`FanSetup::detection`].
+    DetectFans {
+        execute: bool,
+    },
+    /// Confirm what is connected to a PWM output (`None` removes the confirmation). A
+    /// board profile's role cannot be overridden.
+    SetFanRole {
+        pwm: u8,
+        role: Option<FanRole>,
+    },
+    /// Preview, or with `execute` perform, a reset to the system defaults: every saved
+    /// preset is deleted and the fans go back to firmware control. With `everything` the
+    /// detection result and the confirmed roles are forgotten too.
+    ResetFans {
+        execute: bool,
+        everything: bool,
+    },
 }
 
 impl Request {
@@ -114,13 +135,17 @@ impl Request {
             Self::SetProfile { execute: true, .. } => Operation::SetProfile,
             Self::Telemetry => Operation::ReadTelemetry,
             Self::GetFans => Operation::ReadStatus,
-            Self::SetFanPreset { execute, .. } | Self::DeleteFanPreset { execute, .. } => {
+            Self::SetFanPreset { execute, .. }
+            | Self::DeleteFanPreset { execute, .. }
+            | Self::DetectFans { execute }
+            | Self::ResetFans { execute, .. } => {
                 if *execute {
                     Operation::SetFanPreset
                 } else {
                     Operation::PreviewFanPreset
                 }
             }
+            Self::SetFanRole { .. } => Operation::SetFanPreset,
         }
     }
 }
@@ -360,16 +385,92 @@ pub struct Telemetry {
     pub errors: Vec<String>,
 }
 
-/// A PWM output that a curve can drive.
+/// A PWM output of the machine's fan controller.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FanChannelInfo {
     pub pwm: u8,
-    /// Every header on this output, e.g. `CPU_OPT` and `CHA_FAN3`.
+    /// Every header on this output from the board profile (`CPU_OPT`, `CHA_FAN3`), or the
+    /// fan inputs found to follow it (`fan2`, `fan5`), or `pwmN` when nothing is known.
     pub headers: Vec<String>,
-    /// At least one of the headers has reported a speed.
+    /// Fan inputs known to follow this output.
+    pub tachs: Vec<u8>,
+    /// At least one of those inputs has reported a speed.
     pub connected: bool,
     /// The kernel exposes this PWM output.
     pub available: bool,
+    /// What is connected, once confirmed or known from the board profile.
+    pub role: Option<FanRole>,
+    pub role_source: Option<RoleSource>,
+    /// What detection suggests; applied only when the user confirms it.
+    pub suggested_role: Option<FanRole>,
+    /// A curve may drive this output: role `fan`, and the kernel exposes it.
+    pub assignable: bool,
+    /// The last detection of this output, if any.
+    pub probe: Option<ProbedChannel>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DetectState {
+    Idle,
+    Running,
+    Finished,
+    Failed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FanDetection {
+    pub state: DetectState,
+    /// Output being tested while running.
+    pub pwm: Option<u8>,
+    pub done: usize,
+    pub total: usize,
+    pub message: Option<String>,
+}
+
+impl FanDetection {
+    pub fn idle() -> Self {
+        Self {
+            state: DetectState::Idle,
+            pwm: None,
+            done: 0,
+            total: 0,
+            message: None,
+        }
+    }
+}
+
+/// One output in a detection preview.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DetectPlanItem {
+    pub pwm: u8,
+    pub baseline_percent: u8,
+    pub will_test: bool,
+    /// Why it is skipped, when it is.
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FanDetectResult {
+    pub executed: bool,
+    pub plan: Vec<DetectPlanItem>,
+    pub estimated_seconds: u64,
+    pub detection: FanDetection,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FanResetResult {
+    pub executed: bool,
+    /// Saved presets that were (or would be) deleted.
+    pub removed_presets: Vec<String>,
+    /// The detection result and roles were (or would be) forgotten too.
+    pub cleared_knowledge: bool,
+    /// Outputs handed back to firmware.
+    pub released: Vec<u8>,
+    /// Outputs that could not be handed back, with the reason. The fan loop and the
+    /// service's stop hook try again, but the user should know.
+    #[serde(default)]
+    pub release_errors: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -411,11 +512,24 @@ pub struct FanPresetInfo {
     pub curves: Vec<FanCurve>,
     /// Profiles that select this preset.
     pub used_by: Vec<Mode>,
+    /// The preset is valid on this machine. A preset saved elsewhere stays saved but is not
+    /// applied until its outputs are confirmed as fans here.
+    pub usable: bool,
+    pub problem: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FanSetup {
     pub board: Option<String>,
+    /// hwmon name of the fan chip, e.g. `nct6799`.
+    pub controller: Option<String>,
+    /// The chip has been checked on real hardware; for others, test with care.
+    pub controller_verified: bool,
+    /// Neither a board profile nor a detection result describes this machine yet.
+    pub needs_detection: bool,
+    pub detection: FanDetection,
+    /// Unix time of the last detection.
+    pub detected_at: Option<u64>,
     /// False when curves cannot be edited, e.g. the board is unknown.
     pub editable: bool,
     pub reason: Option<String>,
