@@ -30,6 +30,9 @@ pub struct FanHeader {
     pub header: String,
     pub label: String,
     pub kind: FanKind,
+    /// Another header driven by the same PWM output; adjusting one adjusts both.
+    #[serde(default)]
+    pub shares_pwm_with: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -79,6 +82,18 @@ impl BoardProfile {
         }
         if self.fan_headers.iter().any(|h| h.kind == FanKind::Unknown) {
             return Err(invalid("board profiles must state fan or pump"));
+        }
+        for header in &self.fan_headers {
+            let Some(other) = &header.shares_pwm_with else {
+                continue;
+            };
+            let partner = self.fan_headers.iter().find(|h| &h.header == other);
+            if !partner.is_some_and(|p| p.pwm.is_some() && p.pwm == header.pwm) {
+                return Err(invalid(format!(
+                    "{} claims to share a PWM with {other}, which uses a different one",
+                    header.header
+                )));
+            }
         }
         if self
             .voltages
@@ -160,6 +175,11 @@ mod tests {
             ("AIO_PUMP", FanKind::Pump)
         );
         assert_eq!(profile.pump_pwms(), [7]);
+        let shared = profile.header_for_tach(5).unwrap();
+        assert_eq!(shared.header, "CHA_FAN3");
+        assert_eq!(shared.pwm, Some(2), "measured: pwm2 drives CHA_FAN3 too");
+        assert_eq!(shared.shares_pwm_with.as_deref(), Some("CPU_OPT"));
+        assert_eq!(profile.header_for_tach(4).unwrap().pwm, Some(4));
         let twelve = profile.voltages.iter().find(|v| v.label == "+12V").unwrap();
         assert_eq!((twelve.input, twelve.scale), (4, 11.98));
     }
@@ -182,6 +202,9 @@ mod tests {
         let mut unknown = base.clone();
         unknown["fan_headers"][0]["kind"] = "unknown".into();
         assert!(BoardProfile::parse(&unknown.to_string()).is_err());
+        let mut mismatched = base.clone();
+        mismatched["fan_headers"][4]["pwm"] = 5.into();
+        assert!(BoardProfile::parse(&mismatched.to_string()).is_err());
         let mut scale = base;
         scale["voltages"][0]["scale"] = 0.into();
         assert!(BoardProfile::parse(&scale.to_string()).is_err());

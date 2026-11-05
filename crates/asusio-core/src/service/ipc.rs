@@ -269,6 +269,9 @@ pub struct FanHeaderReading {
     pub header: Option<String>,
     pub label: Option<String>,
     pub kind: FanKind,
+    /// Name of another header on the same PWM output.
+    #[serde(default)]
+    pub shares_pwm_with: Option<String>,
     pub rpm: u64,
     /// The header's PWM output, when the driver exposes one.
     pub pwm: Option<PwmReading>,

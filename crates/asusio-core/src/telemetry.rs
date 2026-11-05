@@ -341,6 +341,7 @@ fn fan_headers(
                 header: header.map(|h| h.header.clone()),
                 label: header.map(|h| h.label.clone()),
                 kind: header.map_or(FanKind::Unknown, |h| h.kind),
+                shares_pwm_with: header.and_then(|h| h.shares_pwm_with.clone()),
                 rpm: fan.rpm,
                 pwm,
             });

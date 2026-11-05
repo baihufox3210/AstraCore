@@ -7,13 +7,13 @@
     "LibreHardwareMonitor SuperIOHardware.cs, GetNuvotonConfigurationD, ROG_STRIX_B850_A_GAMING_WIFI",
     "ASUS ROG STRIX B850-A GAMING WIFI specifications: CPU_FAN, CPU_OPT, AIO_PUMP, CHA_FAN1-4"
   ],
-  "verification": "Fan header order confirmed by the owner of this board on 2026-11-04. Voltage names and external dividers follow LibreHardwareMonitor; values were checked for plausibility, not measured.",
+  "verification": "Fan header order confirmed by the owner of this board on 2026-11-04. PWM mapping measured on 2026-11-05 by raising one PWM at a time to 80% (nct6799 pwm_sweep): pwm2 moved CPU_OPT and CHA_FAN3 together, pwm4 moved CHA_FAN2 only; pwm1, pwm3 and pwm6 moved nothing because CPU_FAN, CHA_FAN1 and CHA_FAN4 have no fan connected, so their mapping is assumed. pwm7 (AIO_PUMP) was deliberately not tested. The kernel exposes no pwm5; CHA_FAN3 is driven by pwm2. Voltage names and external dividers follow LibreHardwareMonitor; values were checked for plausibility, not measured.",
   "fan_headers": [
     {"tach": 1, "pwm": 1, "header": "CPU_FAN", "label": "CPU Fan", "kind": "fan"},
     {"tach": 2, "pwm": 2, "header": "CPU_OPT", "label": "CPU Optional Fan", "kind": "fan"},
     {"tach": 3, "pwm": 3, "header": "CHA_FAN1", "label": "Chassis Fan 1", "kind": "fan"},
     {"tach": 4, "pwm": 4, "header": "CHA_FAN2", "label": "Chassis Fan 2", "kind": "fan"},
-    {"tach": 5, "pwm": 5, "header": "CHA_FAN3", "label": "Chassis Fan 3", "kind": "fan"},
+    {"tach": 5, "pwm": 2, "header": "CHA_FAN3", "label": "Chassis Fan 3", "kind": "fan", "shares_pwm_with": "CPU_OPT"},
     {"tach": 6, "pwm": 6, "header": "CHA_FAN4", "label": "Chassis Fan 4", "kind": "fan"},
     {"tach": 7, "pwm": 7, "header": "AIO_PUMP", "label": "AIO Pump", "kind": "pump"}
   ],
