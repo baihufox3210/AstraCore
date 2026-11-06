@@ -5,29 +5,80 @@ use asusio_backends::ene_smbus;
 use serde::{Deserialize, Serialize};
 use std::{fmt, io, os::unix::fs::FileTypeExt, path::Path, str::FromStr};
 
-/// A lighting effect. Only controller built-in hardware modes are planned; each new
-/// effect stays experimental until its color change is confirmed on the hardware.
+/// A lighting effect: a controller built-in hardware mode. The names and Aura IDs come from
+/// the effect table of ASUS's own HAL (`AacHal_x64_MbMgr.dll`, see Research.md); each
+/// effect stays experimental on a backend until it is confirmed on the hardware.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Effect {
     /// One solid color; verified on every configured backend.
     #[default]
     Static,
+    Breathing,
+    Strobing,
+    ColorCycle,
+    Rainbow,
+    BreathRainbow,
+    RainbowComet,
+    Comet,
+    MovingFlash,
+    FlashAndDash,
+    Wave,
+    GlowingYoyo,
+    StarryNight,
 }
 
 impl Effect {
-    pub const ALL: [Self; 1] = [Self::Static];
+    pub const ALL: [Self; 13] = [
+        Self::Static,
+        Self::Breathing,
+        Self::Strobing,
+        Self::ColorCycle,
+        Self::Rainbow,
+        Self::BreathRainbow,
+        Self::RainbowComet,
+        Self::Comet,
+        Self::MovingFlash,
+        Self::FlashAndDash,
+        Self::Wave,
+        Self::GlowingYoyo,
+        Self::StarryNight,
+    ];
 
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Static => "static",
+            Self::Breathing => "breathing",
+            Self::Strobing => "strobing",
+            Self::ColorCycle => "color_cycle",
+            Self::Rainbow => "rainbow",
+            Self::BreathRainbow => "breath_rainbow",
+            Self::RainbowComet => "rainbow_comet",
+            Self::Comet => "comet",
+            Self::MovingFlash => "moving_flash",
+            Self::FlashAndDash => "flash_and_dash",
+            Self::Wave => "wave",
+            Self::GlowingYoyo => "glowing_yoyo",
+            Self::StarryNight => "starry_night",
         }
     }
 
-    /// Whether the effect still awaits physical confirmation.
-    pub fn experimental(self) -> bool {
+    /// The effect ID of the Aura HID `41 05` report (byte 8), from the HAL's effect table.
+    pub fn aura_id(self) -> u8 {
         match self {
-            Self::Static => false,
+            Self::Static => 1,
+            Self::Breathing => 2,
+            Self::Strobing => 3,
+            Self::ColorCycle => 4,
+            Self::Rainbow => 5,
+            Self::BreathRainbow => 6,
+            Self::RainbowComet => 7,
+            Self::Comet => 8,
+            Self::MovingFlash => 9,
+            Self::FlashAndDash => 10,
+            Self::Wave => 11,
+            Self::GlowingYoyo => 12,
+            Self::StarryNight => 13,
         }
     }
 }
@@ -47,7 +98,10 @@ impl FromStr for Effect {
             .ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidInput,
-                    format!("unknown effect {value:?}; supported: static"),
+                    format!(
+                        "unknown effect {value:?}; known: {}",
+                        Self::ALL.map(Self::as_str).join(", ")
+                    ),
                 )
             })
     }
@@ -102,13 +156,26 @@ pub fn backend(device: &Device) -> &'static str {
     }
 }
 
-/// Effects the device's backend implements.
-pub fn effects(_device: &Device) -> Vec<EffectInfo> {
+/// Effects the device's backend implements, and whether each still awaits confirmation on
+/// the hardware. Aura controllers take every effect of the HAL's table through the same
+/// report as Static; the other backends only have Static so far.
+pub fn effects(device: &Device) -> Vec<EffectInfo> {
+    let confirmed: &[Effect] = match device {
+        // Breathing on ARGB header 0: confirmed 2026-11-06 (about 4-5 s per cycle).
+        Device::AuraArgb { .. } => &[Effect::Static, Effect::Breathing],
+        Device::AuraBoard { .. } => &[Effect::Static],
+        _ => {
+            return vec![EffectInfo {
+                effect: Effect::Static,
+                experimental: false,
+            }];
+        }
+    };
     Effect::ALL
         .into_iter()
         .map(|effect| EffectInfo {
             effect,
-            experimental: effect.experimental(),
+            experimental: !confirmed.contains(&effect),
         })
         .collect()
 }
@@ -160,6 +227,48 @@ pub fn availability(device: &Device) -> Availability {
 mod tests {
     use super::*;
 
+    #[test]
+    fn effects_follow_the_hal_table() {
+        for (index, effect) in Effect::ALL.into_iter().enumerate() {
+            assert_eq!(
+                usize::from(effect.aura_id()),
+                index + 1,
+                "IDs 1-13 in order"
+            );
+            assert_eq!(effect.as_str().parse::<Effect>().unwrap(), effect);
+            let json = serde_json::to_string(&effect).unwrap();
+            assert_eq!(json, format!("\"{}\"", effect.as_str()));
+        }
+        assert!("sparkle".parse::<Effect>().is_err());
+
+        let argb = Device::AuraArgb {
+            physical_path: "usb-x/input1".into(),
+            headers: vec![0],
+        };
+        let listed = effects(&argb);
+        assert_eq!(listed.len(), Effect::ALL.len());
+        let experimental = |effect| {
+            listed
+                .iter()
+                .find(|i| i.effect == effect)
+                .unwrap()
+                .experimental
+        };
+        assert!(!experimental(Effect::Static) && !experimental(Effect::Breathing));
+        assert!(experimental(Effect::Wave) && experimental(Effect::StarryNight));
+        assert!(supports(&argb, Effect::Rainbow));
+
+        let gpu = ene("AUMA0-E6K5-0107");
+        assert_eq!(
+            effects(&gpu),
+            [EffectInfo {
+                effect: Effect::Static,
+                experimental: false
+            }]
+        );
+        assert!(!supports(&gpu, Effect::Breathing));
+    }
+
     fn ene(firmware: &str) -> Device {
         Device::Ene {
             adapter_name: "adapter".into(),
@@ -187,7 +296,7 @@ mod tests {
     }
 
     #[test]
-    fn static_is_the_only_and_verified_effect() {
+    fn ene_has_only_the_verified_static_effect() {
         let infos = effects(&ene("AUMA0-E6K5-0107"));
         assert_eq!(
             infos,
@@ -197,7 +306,6 @@ mod tests {
             }]
         );
         assert_eq!("static".parse::<Effect>().unwrap(), Effect::Static);
-        assert!("rainbow".parse::<Effect>().is_err());
         assert_eq!(Effect::default(), Effect::Static);
     }
 

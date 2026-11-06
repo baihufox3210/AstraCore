@@ -89,6 +89,7 @@ pub struct PlannedTarget {
     device: Device,
     endpoint: runtime::Endpoint,
     output: Rgb,
+    effect: Effect,
 }
 
 impl PlannedTarget {
@@ -135,6 +136,7 @@ pub fn plan(config: &Config, request: &Request) -> io::Result<Vec<PlannedTarget>
                 device: configured.device.clone(),
                 endpoint: runtime::resolve(&configured.device)?,
                 output: corrected(request.rgb, gains, request.brightness),
+                effect: request.effect,
             })
         })
         .collect()
@@ -150,7 +152,12 @@ pub struct Outcome {
 pub fn execute(plan: Vec<PlannedTarget>) -> Vec<Outcome> {
     plan.into_iter()
         .map(|target| Outcome {
-            result: runtime::apply(&target.device, &target.endpoint, target.output),
+            result: runtime::apply(
+                &target.device,
+                &target.endpoint,
+                target.output,
+                target.effect,
+            ),
             alias: target.alias,
         })
         .collect()

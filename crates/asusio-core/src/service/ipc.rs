@@ -726,7 +726,12 @@ mod tests {
             Operation::ReadStatus
         );
         let effect = r#"{"method":"set_sync","lighting_config":"/c.json","rgb":[0,0,255],"brightness":80,"calibrated":true,"effect":"rainbow","execute":true}"#;
-        assert!(read_request(line(effect).as_slice()).is_err());
+        assert!(
+            read_request(line(effect).as_slice()).is_ok(),
+            "rainbow is known"
+        );
+        let unknown = effect.replace("rainbow", "sparkle");
+        assert!(read_request(line(&unknown).as_slice()).is_err());
     }
 
     fn line(json: &str) -> Vec<u8> {

@@ -351,9 +351,16 @@ Each target is planned separately: a target that cannot be resolved (for example
 screen before lianli-daemon starts) is reported with its error, and the others are
 still applied. Every target is resolved before the first write.
 
-`--effect` selects a controller built-in effect; only `static` exists so far.
-Effects are added per controller after protocol research, and stay marked
-`experimental` until their color change is confirmed on the hardware.
+`--effect` selects a controller built-in effect. Aura controllers (onboard LEDs and ARGB
+headers) take every effect of the table in ASUS's own HAL, through the same `41 05` report
+as Static with another effect ID: `static` (1), `breathing`, `strobing`, `color_cycle`,
+`rainbow`, `breath_rainbow`, `rainbow_comet`, `comet`, `moving_flash`, `flash_and_dash`,
+`wave`, `glowing_yoyo`, `starry_night` (13). Speed and direction use further reports that
+are not implemented yet, so each effect runs at the controller's default pace. Other
+backends (keyboard, ENE GPU/DRAM, screen) only have `static` so far. `lighting status`
+lists each target's effects; an effect stays `experimental` until it is confirmed on the
+hardware (so far: static everywhere, breathing on ARGB). A target that does not support
+the requested effect is reported with an error and left unchanged.
 
 `lighting status --json` (IPC `get_lighting`) returns `mode`, `sync`,
 `lighting_config`, `recorded` (whether asusiod restores this configuration) and

@@ -99,27 +99,48 @@ fn wdl_enabled(report: &[u8]) -> io::Result<bool> {
     Ok(report[3] != 0)
 }
 
-/// MyAacArgbLedDevice::SetEffect: command 05, strip 0, Static, G,R,B byte order.
-/// Static ARGB color changes have been physically verified on the B850-A controller.
-pub fn argb_static_payload(header: u8, rgb: Rgb) -> io::Result<Payload> {
+/// Highest effect ID of the HAL's effect table (Starry_Night); 0xFF ("Default") is not sent.
+pub const MAX_EFFECT: u8 = 13;
+
+fn check_effect(effect: u8) -> io::Result<()> {
+    if (1..=MAX_EFFECT).contains(&effect) {
+        Ok(())
+    } else {
+        Err(invalid_input("Aura effect ID must be 1-13"))
+    }
+}
+
+/// MyAacArgbLedDevice::SetEffect: command 05, strip 0, effect ID, G,R,B byte order.
+/// Static and Breathing (ID 2) have been physically verified on the B850-A controller.
+pub fn argb_effect_payload(header: u8, effect: u8, rgb: Rgb) -> io::Result<Payload> {
     if header >= MAX_ARGB_HEADERS {
         return Err(invalid_input("ARGB header index must be 0-4"));
     }
+    check_effect(effect)?;
     let mut payload = command(CMD_EFFECT);
     payload[3] = header;
-    payload[7] = EFFECT_STATIC;
+    payload[7] = effect;
     payload[8..11].copy_from_slice(&[rgb[1], rgb[0], rgb[2]]);
     Ok(payload)
 }
 
+pub fn argb_static_payload(header: u8, rgb: Rgb) -> io::Result<Payload> {
+    argb_effect_payload(header, EFFECT_STATIC, rgb)
+}
+
 /// HAL SetLEDs onboard deviceType=1 branch; location is the low byte of its configuration entry.
-pub fn onboard_static_payload(location: u8, rgb: Rgb) -> Payload {
+pub fn onboard_effect_payload(location: u8, effect: u8, rgb: Rgb) -> io::Result<Payload> {
+    check_effect(effect)?;
     let mut payload = command(CMD_EFFECT);
     payload[1] = 1;
     payload[5] = location;
-    payload[7] = EFFECT_STATIC;
+    payload[7] = effect;
     payload[8..11].copy_from_slice(&[rgb[1], rgb[0], rgb[2]]);
-    payload
+    Ok(payload)
+}
+
+pub fn onboard_static_payload(location: u8, rgb: Rgb) -> Payload {
+    onboard_effect_payload(location, EFFECT_STATIC, rgb).expect("Static is a valid effect")
 }
 
 /// Validate the exact device ID and Output Report layout observed on the target controller.
@@ -274,6 +295,17 @@ pub fn write_argb_static(
     headers: &[u8],
     rgb: Rgb,
 ) -> io::Result<()> {
+    write_argb_effect(device, sysfs_root, headers, EFFECT_STATIC, rgb)
+}
+
+/// One HAL effect (by ID) on the given ARGB headers; otherwise as `write_argb_static`.
+pub fn write_argb_effect(
+    device: &HidDevice,
+    sysfs_root: &Path,
+    headers: &[u8],
+    effect: u8,
+    rgb: Rgb,
+) -> io::Result<()> {
     if headers.is_empty() {
         return Err(invalid_input("select at least one ARGB header"));
     }
@@ -282,7 +314,7 @@ pub fn write_argb_static(
         .map(|&header| {
             Ok((
                 format!("ARGB header {header}"),
-                argb_static_payload(header, rgb)?,
+                argb_effect_payload(header, effect, rgb)?,
             ))
         })
         .collect::<io::Result<Vec<_>>>()?;
@@ -307,6 +339,19 @@ pub fn write_onboard_static(
     locations: &[u8],
     rgb: Rgb,
 ) -> io::Result<()> {
+    write_onboard_effect(device, sysfs_root, locations, EFFECT_STATIC, rgb)
+}
+
+/// One HAL effect (by ID) on advertised onboard locations; otherwise as
+/// `write_onboard_static`.
+pub fn write_onboard_effect(
+    device: &HidDevice,
+    sysfs_root: &Path,
+    locations: &[u8],
+    effect: u8,
+    rgb: Rgb,
+) -> io::Result<()> {
+    check_effect(effect)?;
     if locations.is_empty() {
         return Err(invalid_input("select at least one onboard location"));
     }
@@ -324,15 +369,16 @@ pub fn write_onboard_static(
         sysfs_root,
         "WDL is enabled; refusing to change lighting ownership",
     )?;
-    send_reports(
-        device,
-        locations.iter().map(|&location| {
-            (
+    let payloads = locations
+        .iter()
+        .map(|&location| {
+            Ok((
                 format!("onboard location {location}"),
-                onboard_static_payload(location, rgb),
-            )
-        }),
-    )
+                onboard_effect_payload(location, effect, rgb)?,
+            ))
+        })
+        .collect::<io::Result<Vec<_>>>()?;
+    send_reports(device, payloads)
 }
 
 /// Convert an explicitly supplied byte slice into one Output Report payload.
@@ -372,6 +418,19 @@ mod tests {
             &payload[..11],
             &[5, 1, 0, 0, 0, 0x12, 0, 1, 0x34, 0x12, 0x56]
         );
+        let wave = onboard_effect_payload(0x12, 11, [0x12, 0x34, 0x56]).unwrap();
+        assert_eq!(wave[7], 11, "effect ID in byte 8 of the report");
+        assert_eq!(&wave[8..11], &[0x34, 0x12, 0x56]);
+        let breathing = argb_effect_payload(1, 2, [0x80, 0xc0, 0xff]).unwrap();
+        assert_eq!(
+            &breathing[..11],
+            &[5, 0, 0, 1, 0, 0, 0, 2, 0xc0, 0x80, 0xff],
+            "the report confirmed on the hardware, header 1"
+        );
+        for bad in [0, MAX_EFFECT + 1, 0xff] {
+            assert!(argb_effect_payload(0, bad, [0; 3]).is_err());
+            assert!(onboard_effect_payload(0, bad, [0; 3]).is_err());
+        }
         response[4] = 9;
         assert!(onboard_locations(&response).is_err());
         assert!(onboard_locations(&response[..8]).is_err());

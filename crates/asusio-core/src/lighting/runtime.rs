@@ -1,5 +1,8 @@
 //! Native device discovery, resolution and dispatch. Add backend-specific handling here.
-use super::config::{Device, invalid};
+use super::{
+    config::{Device, invalid},
+    info::Effect,
+};
 use asusio_backends::{
     aura_hid, ene_smbus, ene_smbus::ExpectedIdentity, lianli_ipc, lianli_screen, scope_keyboard,
 };
@@ -150,14 +153,16 @@ pub fn resolve(device: &Device) -> io::Result<Endpoint> {
     }
 }
 
-pub fn apply(device: &Device, endpoint: &Endpoint, rgb: Rgb) -> io::Result<()> {
+/// Write `rgb` with `effect`. Planning has already checked that the backend supports the
+/// effect; backends without effects only ever receive Static.
+pub fn apply(device: &Device, endpoint: &Endpoint, rgb: Rgb, effect: Effect) -> io::Result<()> {
     let root = Path::new(sysfs::HID);
     match (device, endpoint) {
         (Device::AuraArgb { headers, .. }, Endpoint::Hid(hid)) => {
-            aura_hid::write_argb_static(hid, root, headers, rgb)
+            aura_hid::write_argb_effect(hid, root, headers, effect.aura_id(), rgb)
         }
         (Device::AuraBoard { locations, .. }, Endpoint::Hid(hid)) => {
-            aura_hid::write_onboard_static(hid, root, locations, rgb)
+            aura_hid::write_onboard_effect(hid, root, locations, effect.aura_id(), rgb)
         }
         (Device::ScopeKeyboard { .. }, Endpoint::Hid(hid)) => {
             scope_keyboard::write_static(hid, root, rgb)

@@ -261,7 +261,9 @@ pub struct LightArgs {
     /// Bypass local compensation for comparison; does not change stored calibration
     #[arg(long)]
     pub uncalibrated: bool,
-    /// Controller effect; only `static` is supported so far
+    /// Controller effect: static everywhere; on Aura (board, ARGB) also breathing, strobing,
+    /// color_cycle, rainbow, breath_rainbow, rainbow_comet, comet, moving_flash,
+    /// flash_and_dash, wave, glowing_yoyo, starry_night (experimental until confirmed)
     #[arg(long, default_value = "static", value_parser = parse::from_str::<Effect>)]
     pub effect: Effect,
 }
