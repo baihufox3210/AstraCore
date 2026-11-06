@@ -325,6 +325,36 @@ impl State {
         }
     }
 
+    /// Record new Sync settings. From individual mode this switches to Sync, and every
+    /// target with settings of its own keeps them (custom); the others follow.
+    pub fn record_sync<'a>(
+        &mut self,
+        sync: LightingState,
+        configured: impl IntoIterator<Item = &'a str>,
+    ) {
+        if self.lighting_mode == LightingMode::Individual {
+            self.lighting_custom = configured
+                .into_iter()
+                .filter(|alias| self.lighting.contains_key(*alias))
+                .map(str::to_owned)
+                .collect();
+            self.lighting_mode = LightingMode::Sync;
+        }
+        self.sync = Some(sync);
+    }
+
+    /// Aliases that show the Sync settings once `record_sync` has run.
+    pub fn sync_followers<'a>(&self, configured: impl IntoIterator<Item = &'a str>) -> Vec<String> {
+        configured
+            .into_iter()
+            .filter(|alias| match self.lighting_mode {
+                LightingMode::Sync => !self.lighting_custom.contains(*alias),
+                LightingMode::Individual => !self.lighting.contains_key(*alias),
+            })
+            .map(str::to_owned)
+            .collect()
+    }
+
     /// Make `alias` follow the Sync settings or keep its own. A target turning custom
     /// without settings of its own starts from the Sync settings, so it keeps what it shows.
     /// From individual mode this switches to Sync, and every target that has settings of
@@ -591,6 +621,18 @@ mod tests {
         state.lighting_custom.insert("ram".into());
         state.bind_lighting_config("/b/lighting.json".into(), Some(1000));
         assert!(state.lighting_custom.is_empty());
+
+        // New Sync settings from individual mode leave targets with their own settings
+        // custom, and only the others follow.
+        let mut legacy = State::default();
+        legacy.bind_lighting_config("/a/lighting.json".into(), Some(1000));
+        legacy.lighting.insert("gpu".into(), red);
+        assert_eq!(legacy.sync_followers(configured), ["board", "ram"]);
+        legacy.record_sync(blue, configured);
+        assert_eq!(legacy.lighting_mode, LightingMode::Sync);
+        assert_eq!(legacy.desired("gpu"), Some(red));
+        assert_eq!(legacy.desired("board"), Some(blue));
+        assert_eq!(legacy.sync_followers(configured), ["board", "ram"]);
 
         // Older state files have no custom set.
         let loaded: State = serde_json::from_slice(br#"{"schema_version":1}"#).unwrap();

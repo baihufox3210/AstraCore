@@ -194,21 +194,11 @@ impl Daemon {
         let owner = owner(caller);
         let config = read_config(&lighting_config, owner)?;
         check_brightness(&desired)?;
-        // In Sync mode, targets set to custom keep their own settings; from individual
-        // mode every target follows.
-        let followers: Vec<&str> = {
-            let state = lock(&self.state);
-            aliases(&config)
-                .into_iter()
-                .filter(|alias| {
-                    state.lighting_mode != LightingMode::Sync
-                        || state.source(alias) == LightingSource::Sync
-                })
-                .collect()
-        };
+        // Targets with settings of their own (custom) keep them; see `State::record_sync`.
+        let followers = lock(&self.state).sync_followers(aliases(&config));
         let jobs: Vec<Job> = followers
             .into_iter()
-            .map(|alias| (alias.to_owned(), desired))
+            .map(|alias| (alias, desired))
             .collect();
         let targets = self.run_jobs(&config, &jobs, execute);
         let mut state = lock(&self.state);
@@ -221,10 +211,7 @@ impl Daemon {
             });
         }
         state.bind_lighting_config(lighting_config, owner);
-        state.sync = Some(desired);
-        if state.lighting_mode != LightingMode::Sync {
-            state.switch_lighting_mode(LightingMode::Sync, aliases(&config))?;
-        }
+        state.record_sync(desired, aliases(&config));
         Ok(LightingResult {
             executed: true,
             targets,
