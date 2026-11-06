@@ -51,7 +51,8 @@ fn request(socket: &Path, request: &Value) -> io::Result<Value> {
     read_response(stream)
 }
 
-fn validate_target(capabilities: &Value, device_id: &str) -> io::Result<()> {
+/// Checks the device and that it offers `mode`; returns how many colors the mode takes.
+fn validate_target(capabilities: &Value, device_id: &str, mode: &str) -> io::Result<u64> {
     let devices = capabilities
         .as_array()
         .ok_or_else(|| invalid("expected daemon device capability array"))?;
@@ -69,17 +70,39 @@ fn validate_target(capabilities: &Value, device_id: &str) -> io::Result<()> {
         || !device
             .get("supported_modes")
             .and_then(Value::as_array)
-            .is_some_and(|modes| modes.iter().any(|mode| mode.as_str() == Some("Static")))
+            .is_some_and(|modes| modes.iter().any(|value| value.as_str() == Some(mode)))
     {
-        return Err(invalid(
-            "daemon capabilities do not match the 60-LED Universal Screen Static backend",
-        ));
+        return Err(invalid(format!(
+            "daemon capabilities do not match the 60-LED Universal Screen with mode {mode}"
+        )));
     }
-    Ok(())
+    let max_colors = device
+        .get("effect_parameters")
+        .and_then(Value::as_array)
+        .and_then(|effects| {
+            effects
+                .iter()
+                .find(|effect| effect.get("mode").and_then(Value::as_str) == Some(mode))
+        })
+        .and_then(|effect| effect.get("max_colors"))
+        .and_then(Value::as_u64)
+        .unwrap_or(1);
+    Ok(max_colors)
 }
 
+/// Modes asusio sends to the screen (lianli-daemon renders them in software).
+pub const MODES: [&str; 5] = ["Static", "Breathing", "RainbowMorph", "Rainbow", "Twinkle"];
+
+/// One color for modes that take colors, none for those that make their own; speed and
+/// direction are left to the daemon's defaults.
+fn effect_request(device_id: &str, mode: &str, rgb: Rgb, colors: u64) -> Value {
+    let colors: Vec<Rgb> = if colors == 0 { Vec::new() } else { vec![rgb] };
+    json!({"method":"SetRgbEffect","params":{"device_id":device_id,"zone":0,"effect":{"mode":mode,"colors":colors,"brightness":4}}})
+}
+
+#[cfg(test)]
 fn static_request(device_id: &str, rgb: Rgb) -> Value {
-    json!({"method":"SetRgbEffect","params":{"device_id":device_id,"zone":0,"effect":{"mode":"Static","colors":[rgb],"brightness":4}}})
+    effect_request(device_id, "Static", rgb, 1)
 }
 
 // This adapter implements the published 1.2.4 IPC schema, not arbitrary future versions.
@@ -113,12 +136,20 @@ fn guarded_request(identity: &Value, inner: Value) -> io::Result<Value> {
 
 /// A successful reply acknowledges acceptance, not physical rendering completion.
 pub fn set_static(socket: &Path, usb_id: &str, rgb: Rgb) -> io::Result<()> {
+    set_effect(socket, usb_id, "Static", rgb)
+}
+
+/// One of [`MODES`] with `rgb` (ignored by the modes that make their own colors).
+pub fn set_effect(socket: &Path, usb_id: &str, mode: &str, rgb: Rgb) -> io::Result<()> {
+    if !MODES.contains(&mode) {
+        return Err(invalid(format!("unsupported screen effect mode {mode}")));
+    }
     let id = crate::lianli_screen::DEVICE;
     let device_id = format!("hid:{:04x}:{:04x}:{usb_id}", id.vendor, id.product);
     let identity = request(socket, &json!({"method":"GetDaemonInfo"}))?;
-    let guarded = guarded_request(&identity, static_request(&device_id, rgb))?;
     let capabilities = request(socket, &json!({"method":"GetRgbCapabilities"}))?;
-    validate_target(&capabilities, &device_id)?;
+    let colors = validate_target(&capabilities, &device_id, mode)?;
+    let guarded = guarded_request(&identity, effect_request(&device_id, mode, rgb, colors))?;
     request(socket, &guarded)?;
     Ok(())
 }
@@ -151,11 +182,28 @@ mod tests {
     #[test]
     fn validates_exact_device_family_count_and_static_mode() {
         let id = "hid:0416:8050:6-9.3";
-        let mut devices = json!([{"device_id":id,"render_profile":{"family":"UniversalScreen"},"zones":[{"led_count":60}],"supported_modes":["Static"]}]);
-        validate_target(&devices, id).unwrap();
-        assert!(validate_target(&devices, "hid:0416:8050:6-9.4").is_err());
+        let mut devices = json!([{"device_id":id,"render_profile":{"family":"UniversalScreen"},"zones":[{"led_count":60}],"supported_modes":["Static","Rainbow"],"effect_parameters":[{"mode":"Static","max_colors":1},{"mode":"Rainbow","max_colors":0}]}]);
+        assert_eq!(validate_target(&devices, id, "Static").unwrap(), 1);
+        assert_eq!(validate_target(&devices, id, "Rainbow").unwrap(), 0);
+        assert!(
+            validate_target(&devices, id, "Twinkle").is_err(),
+            "mode not offered"
+        );
+        assert!(validate_target(&devices, "hid:0416:8050:6-9.4", "Static").is_err());
         devices[0]["zones"][0]["led_count"] = json!(20);
-        assert!(validate_target(&devices, id).is_err());
+        assert!(validate_target(&devices, id, "Static").is_err());
+    }
+    #[test]
+    fn effect_requests_send_colors_only_to_modes_that_take_them() {
+        let rainbow = effect_request("x", "Rainbow", [1, 2, 3], 0);
+        assert_eq!(rainbow["params"]["effect"]["mode"], "Rainbow");
+        assert_eq!(rainbow["params"]["effect"]["colors"], json!([]));
+        let breathing = effect_request("x", "Breathing", [1, 2, 3], 1);
+        assert_eq!(breathing["params"]["effect"]["colors"], json!([[1, 2, 3]]));
+        assert!(
+            breathing["params"]["effect"].get("speed").is_none(),
+            "daemon default"
+        );
     }
     #[test]
     fn static_request_uses_native_ipc_and_full_brightness() {

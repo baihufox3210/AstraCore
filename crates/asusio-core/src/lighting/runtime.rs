@@ -180,7 +180,10 @@ pub fn apply(device: &Device, endpoint: &Endpoint, rgb: Rgb, effect: Effect) -> 
                 firmware,
                 led_count: *led_count,
             };
-            ene_smbus::write_static(*bus, *address, rgb, Some(expected)).map(|_| ())
+            let mode = effect
+                .ene_mode()
+                .ok_or_else(|| invalid(format!("ENE has no {effect} effect")))?;
+            ene_smbus::write_effect(*bus, *address, mode, rgb, Some(expected)).map(|_| ())
         }
         (
             Device::Screen {
@@ -188,7 +191,12 @@ pub fn apply(device: &Device, endpoint: &Endpoint, rgb: Rgb, effect: Effect) -> 
                 daemon_socket,
             },
             Endpoint::Screen,
-        ) => lianli_ipc::set_static(daemon_socket, usb_id, rgb),
+        ) => {
+            let mode = effect
+                .screen_mode()
+                .ok_or_else(|| invalid(format!("the screen has no {effect} effect")))?;
+            lianli_ipc::set_effect(daemon_socket, usb_id, mode, rgb)
+        }
         _ => Err(invalid("resolved backend mismatch")),
     }
 }

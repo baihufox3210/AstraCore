@@ -530,13 +530,9 @@ mod tests {
                     }),
                 ),
                 (
-                    "ram".to_owned(),
-                    target(Device::Ene {
-                        adapter_name: "a".into(),
-                        adapter_parent: "/sys/devices/x".into(),
-                        address: 0x71,
-                        firmware: "DIMM_LED-0103".into(),
-                        led_count: 8,
+                    "keyboard".to_owned(),
+                    target(Device::ScopeKeyboard {
+                        physical_path: "usb-y/input1".into(),
                     }),
                 ),
             ]
@@ -549,9 +545,12 @@ mod tests {
             effect: Effect::Rainbow,
         };
         assert_eq!(fit(&config, "fans", rainbow), rainbow);
-        let ram = fit(&config, "ram", rainbow);
-        assert_eq!(ram.effect, Effect::Static);
-        assert_eq!((ram.rgb, ram.brightness), (rainbow.rgb, rainbow.brightness));
+        let keyboard = fit(&config, "keyboard", rainbow);
+        assert_eq!(keyboard.effect, Effect::Static);
+        assert_eq!(
+            (keyboard.rgb, keyboard.brightness),
+            (rainbow.rgb, rainbow.brightness)
+        );
         assert_eq!(fit(&config, "unknown", rainbow), rainbow);
     }
 }

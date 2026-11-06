@@ -63,6 +63,32 @@ impl Effect {
         }
     }
 
+    /// The ENE mode (register `0x8021`) for this effect, if ENE controllers have it.
+    pub fn ene_mode(self) -> Option<u8> {
+        match self {
+            Self::Static => Some(1),
+            Self::Breathing => Some(2),
+            Self::Strobing => Some(3),
+            Self::ColorCycle => Some(4),
+            Self::Rainbow => Some(5),
+            Self::BreathRainbow => Some(6),
+            Self::StarryNight => Some(13),
+            _ => None,
+        }
+    }
+
+    /// The lianli-daemon mode that renders this effect on the screen, if any.
+    pub fn screen_mode(self) -> Option<&'static str> {
+        match self {
+            Self::Static => Some("Static"),
+            Self::Breathing => Some("Breathing"),
+            Self::ColorCycle => Some("RainbowMorph"),
+            Self::Rainbow => Some("Rainbow"),
+            Self::StarryNight => Some("Twinkle"),
+            _ => None,
+        }
+    }
+
     /// The effect ID of the Aura HID `41 05` report (byte 8), from the HAL's effect table.
     pub fn aura_id(self) -> u8 {
         match self {
@@ -156,29 +182,41 @@ pub fn backend(device: &Device) -> &'static str {
     }
 }
 
-/// Effects the device's backend implements. Aura controllers take the HAL's effects through
-/// the same `41 05` report as Static; on the B850-A these seven were confirmed on the
-/// hardware (2026-11-06). Rainbow_Comet, Comet, Moving_Flash, Flash_and_Dash, Wave and
-/// Glowing_Yoyo showed no animation with that report alone (they likely need the `41 23` /
-/// `41 28` reports, not implemented), so they are not offered. The other backends only
-/// have Static so far.
+/// Effects the device's backend implements, and whether each still awaits confirmation on
+/// the hardware.
+///
+/// Aura controllers take the HAL's effects through the same `41 05` report as Static; on the
+/// B850-A these seven were confirmed (2026-11-06). Rainbow_Comet, Comet, Moving_Flash,
+/// Flash_and_Dash, Wave and Glowing_Yoyo showed no animation with that report alone (they
+/// likely need the `41 23` / `41 28` reports, not implemented), so they are not offered.
+/// ENE GPU/DRAM controllers take the same seven as modes of register `0x8021`; the screen
+/// gets five from lianli-daemon's software modes. The keyboard only has Static.
 pub fn effects(device: &Device) -> Vec<EffectInfo> {
-    let list: &[Effect] = match device {
-        Device::AuraArgb { .. } | Device::AuraBoard { .. } => &[
-            Effect::Static,
-            Effect::Breathing,
-            Effect::Strobing,
-            Effect::ColorCycle,
-            Effect::Rainbow,
-            Effect::BreathRainbow,
-            Effect::StarryNight,
-        ],
-        _ => &[Effect::Static],
+    const SEVEN: [Effect; 7] = [
+        Effect::Static,
+        Effect::Breathing,
+        Effect::Strobing,
+        Effect::ColorCycle,
+        Effect::Rainbow,
+        Effect::BreathRainbow,
+        Effect::StarryNight,
+    ];
+    let (list, confirmed): (Vec<Effect>, &[Effect]) = match device {
+        Device::AuraArgb { .. } | Device::AuraBoard { .. } => (SEVEN.to_vec(), &SEVEN),
+        Device::Ene { .. } => (SEVEN.to_vec(), &[Effect::Static]),
+        Device::Screen { .. } => (
+            Effect::ALL
+                .into_iter()
+                .filter(|effect| effect.screen_mode().is_some())
+                .collect(),
+            &[Effect::Static],
+        ),
+        Device::ScopeKeyboard { .. } => (vec![Effect::Static], &[Effect::Static]),
     };
-    list.iter()
-        .map(|&effect| EffectInfo {
+    list.into_iter()
+        .map(|effect| EffectInfo {
             effect,
-            experimental: false,
+            experimental: !confirmed.contains(&effect),
         })
         .collect()
 }
@@ -262,14 +300,28 @@ mod tests {
         assert!(!supports(&argb, Effect::Comet));
 
         let gpu = ene("AUMA0-E6K5-0107");
+        assert_eq!(effects(&gpu).len(), 7);
+        assert!(supports(&gpu, Effect::Rainbow) && !supports(&gpu, Effect::Wave));
+        for info in effects(&gpu) {
+            assert_eq!(info.experimental, info.effect != Effect::Static);
+            assert!(info.effect.ene_mode().is_some());
+        }
+        let screen = Device::Screen {
+            usb_id: "6-9.3".into(),
+            daemon_socket: "/run/user/1000/lianli-daemon.sock".into(),
+        };
+        let offered: Vec<Effect> = effects(&screen).iter().map(|i| i.effect).collect();
         assert_eq!(
-            effects(&gpu),
-            [EffectInfo {
-                effect: Effect::Static,
-                experimental: false
-            }]
+            offered,
+            [
+                Effect::Static,
+                Effect::Breathing,
+                Effect::ColorCycle,
+                Effect::Rainbow,
+                Effect::StarryNight
+            ]
         );
-        assert!(!supports(&gpu, Effect::Breathing));
+        assert!(!supports(&screen, Effect::Strobing));
     }
 
     fn ene(firmware: &str) -> Device {
@@ -299,15 +351,7 @@ mod tests {
     }
 
     #[test]
-    fn ene_has_only_the_verified_static_effect() {
-        let infos = effects(&ene("AUMA0-E6K5-0107"));
-        assert_eq!(
-            infos,
-            [EffectInfo {
-                effect: Effect::Static,
-                experimental: false
-            }]
-        );
+    fn static_is_the_default_effect() {
         assert_eq!("static".parse::<Effect>().unwrap(), Effect::Static);
         assert_eq!(Effect::default(), Effect::Static);
     }

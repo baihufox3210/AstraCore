@@ -357,8 +357,15 @@ Static, with another effect ID. Confirmed on the B850-A: `static`, `breathing`,
 `strobing`, `color_cycle`, `rainbow`, `breath_rainbow`, `starry_night`. Rainbow comet,
 comet, moving flash, flash and dash, wave and glowing yoyo did nothing with that report
 alone (they probably need the speed/parameter reports, not implemented) and are not
-offered. Effects run at the controller's default pace. Other backends (keyboard, ENE
-GPU/DRAM, screen) only have `static` so far. `lighting status` lists each target's effects.
+offered. Effects run at the controller's default pace.
+
+ENE GPU and DRAM controllers take the same seven effects as modes of register `0x8021`
+(1 static, 2 breathing, 3 flashing, 4 spectrum cycle, 5 rainbow, 6 spectrum cycle
+breathing, 13 random flicker for starry night); only the mode value differs from the
+Static write. The Lian Li screen gets five from lianli-daemon's software modes: static,
+breathing, color cycle (`RainbowMorph`), rainbow and starry night (`Twinkle`). These are
+`experimental` until confirmed on the hardware. The keyboard only has `static`.
+`lighting status` lists each target's effects.
 
 A Sync setting with an effect a following target lacks is shown there as a static color
 (same color and brightness), so an animated Sync setting works across mixed devices. A

@@ -241,15 +241,29 @@ pub fn read_state(bus: u32, address: u8) -> io::Result<EneColorState> {
     })
 }
 
-fn static_plan(info: &EneInfo, rgb: Rgb) -> Vec<(u16, u8)> {
+/// ENE effect modes (register `0x8021`) asusio sends. Static is 1. The others follow the
+/// public ENE mode table (2 breathing, 3 flashing, 4 spectrum cycle, 5 rainbow, 6 spectrum
+/// cycle breathing, 13 random flicker), which matches the IDs of ASUS's own HAL effect
+/// table for the same effects.
+pub const STATIC_MODE: u8 = 1;
+pub const MODES: [u8; 7] = [1, 2, 3, 4, 5, 6, 13];
+
+/// Colors into the effect buffer, then Direct off, the mode, and Apply. Only the mode value
+/// differs between effects.
+fn effect_plan(info: &EneInfo, mode: u8, rgb: Rgb) -> Vec<(u16, u8)> {
     let mut writes = Vec::new();
     for index in 0..u16::from(info.led_count) {
         for (component, value) in [rgb[0], rgb[2], rgb[1]].into_iter().enumerate() {
             writes.push((info.effect_register + index * 3 + component as u16, value));
         }
     }
-    writes.extend([(0x8020, 0), (0x8021, 1), (0x80a0, 1)]);
+    writes.extend([(0x8020, 0), (0x8021, mode), (0x80a0, 1)]);
     writes
+}
+
+#[cfg(test)]
+fn static_plan(info: &EneInfo, rgb: Rgb) -> Vec<(u16, u8)> {
+    effect_plan(info, STATIC_MODE, rgb)
 }
 
 /// Firmware identity a caller expects; checked on the locked descriptor before color writes.
@@ -267,6 +281,20 @@ pub fn write_static(
     rgb: Rgb,
     expected: Option<ExpectedIdentity>,
 ) -> io::Result<EneInfo> {
+    write_effect(bus, address, STATIC_MODE, rgb, expected)
+}
+
+/// `write_static` with another mode from [`MODES`].
+pub fn write_effect(
+    bus: u32,
+    address: u8,
+    mode: u8,
+    rgb: Rgb,
+    expected: Option<ExpectedIdentity>,
+) -> io::Result<EneInfo> {
+    if !MODES.contains(&mode) {
+        return Err(invalid("unsupported ENE effect mode"));
+    }
     let adapter = Bus::open(bus, address)?;
     let info = adapter.identify(bus, address)?;
     if let Some(expected) = expected
@@ -276,7 +304,7 @@ pub fn write_static(
             "ENE identity differs from the configured target; no colors written",
         ));
     }
-    for (register, value) in static_plan(&info, rgb) {
+    for (register, value) in effect_plan(&info, mode, rgb) {
         adapter.write_register(register, value)?;
     }
     Ok(info)
@@ -417,6 +445,26 @@ mod tests {
                 (0x80a0, 1)
             ]
         );
+    }
+
+    #[test]
+    fn effects_change_only_the_mode_register() {
+        let info = EneInfo {
+            bus: 7,
+            address: 0x70,
+            version: "AUDA0-E6K5-0101".into(),
+            led_count: 2,
+            effect_register: 0x8160,
+        };
+        let plain = static_plan(&info, [1, 2, 3]);
+        for mode in MODES {
+            let plan = effect_plan(&info, mode, [1, 2, 3]);
+            assert_eq!(plan.len(), plain.len());
+            for (with, without) in plan.iter().zip(&plain) {
+                let expected = if with.0 == 0x8021 { mode } else { without.1 };
+                assert_eq!((with.0, with.1), (without.0, expected));
+            }
+        }
     }
     #[test]
     fn rejects_spd_before_opening_adapter() {
