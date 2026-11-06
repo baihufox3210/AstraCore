@@ -190,7 +190,8 @@ pub fn backend(device: &Device) -> &'static str {
 /// Flash_and_Dash, Wave and Glowing_Yoyo showed no animation with that report alone (they
 /// likely need the `41 23` / `41 28` reports, not implemented), so they are not offered.
 /// ENE GPU/DRAM controllers take the same seven as modes of register `0x8021`; the screen
-/// gets five from lianli-daemon's software modes. The keyboard only has Static.
+/// gets five from lianli-daemon's software modes; all confirmed on the hardware
+/// (2026-11-06). The keyboard only has Static.
 pub fn effects(device: &Device) -> Vec<EffectInfo> {
     const SEVEN: [Effect; 7] = [
         Effect::Static,
@@ -203,13 +204,14 @@ pub fn effects(device: &Device) -> Vec<EffectInfo> {
     ];
     let (list, confirmed): (Vec<Effect>, &[Effect]) = match device {
         Device::AuraArgb { .. } | Device::AuraBoard { .. } => (SEVEN.to_vec(), &SEVEN),
-        Device::Ene { .. } => (SEVEN.to_vec(), &[Effect::Static]),
+        // Confirmed on the hardware 2026-11-06, like the Aura effects.
+        Device::Ene { .. } => (SEVEN.to_vec(), &SEVEN),
         Device::Screen { .. } => (
             Effect::ALL
                 .into_iter()
                 .filter(|effect| effect.screen_mode().is_some())
                 .collect(),
-            &[Effect::Static],
+            &SEVEN,
         ),
         Device::ScopeKeyboard { .. } => (vec![Effect::Static], &[Effect::Static]),
     };
@@ -302,8 +304,8 @@ mod tests {
         let gpu = ene("AUMA0-E6K5-0107");
         assert_eq!(effects(&gpu).len(), 7);
         assert!(supports(&gpu, Effect::Rainbow) && !supports(&gpu, Effect::Wave));
-        for info in effects(&gpu) {
-            assert_eq!(info.experimental, info.effect != Effect::Static);
+        for info in effects(&gpu).into_iter().chain(effects(&argb)) {
+            assert!(!info.experimental, "all confirmed");
             assert!(info.effect.ene_mode().is_some());
         }
         let screen = Device::Screen {

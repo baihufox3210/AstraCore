@@ -363,8 +363,8 @@ ENE GPU and DRAM controllers take the same seven effects as modes of register `0
 (1 static, 2 breathing, 3 flashing, 4 spectrum cycle, 5 rainbow, 6 spectrum cycle
 breathing, 13 random flicker for starry night); only the mode value differs from the
 Static write. The Lian Li screen gets five from lianli-daemon's software modes: static,
-breathing, color cycle (`RainbowMorph`), rainbow and starry night (`Twinkle`). These are
-`experimental` until confirmed on the hardware. The keyboard only has `static`.
+breathing, color cycle (`RainbowMorph`), rainbow and starry night (`Twinkle`). All of them
+were confirmed on the hardware (2026-11-06). The keyboard only has `static`.
 `lighting status` lists each target's effects.
 
 A Sync setting with an effect a following target lacks is shown there as a static color
