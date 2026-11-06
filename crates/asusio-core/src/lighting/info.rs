@@ -156,26 +156,29 @@ pub fn backend(device: &Device) -> &'static str {
     }
 }
 
-/// Effects the device's backend implements, and whether each still awaits confirmation on
-/// the hardware. Aura controllers take every effect of the HAL's table through the same
-/// report as Static; the other backends only have Static so far.
+/// Effects the device's backend implements. Aura controllers take the HAL's effects through
+/// the same `41 05` report as Static; on the B850-A these seven were confirmed on the
+/// hardware (2026-11-06). Rainbow_Comet, Comet, Moving_Flash, Flash_and_Dash, Wave and
+/// Glowing_Yoyo showed no animation with that report alone (they likely need the `41 23` /
+/// `41 28` reports, not implemented), so they are not offered. The other backends only
+/// have Static so far.
 pub fn effects(device: &Device) -> Vec<EffectInfo> {
-    let confirmed: &[Effect] = match device {
-        // Breathing on ARGB header 0: confirmed 2026-11-06 (about 4-5 s per cycle).
-        Device::AuraArgb { .. } => &[Effect::Static, Effect::Breathing],
-        Device::AuraBoard { .. } => &[Effect::Static],
-        _ => {
-            return vec![EffectInfo {
-                effect: Effect::Static,
-                experimental: false,
-            }];
-        }
+    let list: &[Effect] = match device {
+        Device::AuraArgb { .. } | Device::AuraBoard { .. } => &[
+            Effect::Static,
+            Effect::Breathing,
+            Effect::Strobing,
+            Effect::ColorCycle,
+            Effect::Rainbow,
+            Effect::BreathRainbow,
+            Effect::StarryNight,
+        ],
+        _ => &[Effect::Static],
     };
-    Effect::ALL
-        .into_iter()
-        .map(|effect| EffectInfo {
+    list.iter()
+        .map(|&effect| EffectInfo {
             effect,
-            experimental: !confirmed.contains(&effect),
+            experimental: false,
         })
         .collect()
 }
@@ -246,17 +249,17 @@ mod tests {
             headers: vec![0],
         };
         let listed = effects(&argb);
-        assert_eq!(listed.len(), Effect::ALL.len());
-        let experimental = |effect| {
-            listed
-                .iter()
-                .find(|i| i.effect == effect)
-                .unwrap()
-                .experimental
-        };
-        assert!(!experimental(Effect::Static) && !experimental(Effect::Breathing));
-        assert!(experimental(Effect::Wave) && experimental(Effect::StarryNight));
-        assert!(supports(&argb, Effect::Rainbow));
+        assert_eq!(listed.len(), 7);
+        assert!(
+            listed.iter().all(|info| !info.experimental),
+            "all confirmed"
+        );
+        assert!(supports(&argb, Effect::Rainbow) && supports(&argb, Effect::StarryNight));
+        assert!(
+            !supports(&argb, Effect::Wave),
+            "no animation with 41 05 alone"
+        );
+        assert!(!supports(&argb, Effect::Comet));
 
         let gpu = ene("AUMA0-E6K5-0107");
         assert_eq!(

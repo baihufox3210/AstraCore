@@ -111,7 +111,8 @@ fn check_effect(effect: u8) -> io::Result<()> {
 }
 
 /// MyAacArgbLedDevice::SetEffect: command 05, strip 0, effect ID, G,R,B byte order.
-/// Static and Breathing (ID 2) have been physically verified on the B850-A controller.
+/// Static, Breathing, Strobing, Color cycle, Rainbow, Breath_rainbow and Starry_Night have
+/// been physically verified on the B850-A controller.
 pub fn argb_effect_payload(header: u8, effect: u8, rgb: Rgb) -> io::Result<Payload> {
     if header >= MAX_ARGB_HEADERS {
         return Err(invalid_input("ARGB header index must be 0-4"));

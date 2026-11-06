@@ -262,8 +262,7 @@ pub struct LightArgs {
     #[arg(long)]
     pub uncalibrated: bool,
     /// Controller effect: static everywhere; on Aura (board, ARGB) also breathing, strobing,
-    /// color_cycle, rainbow, breath_rainbow, rainbow_comet, comet, moving_flash,
-    /// flash_and_dash, wave, glowing_yoyo, starry_night (experimental until confirmed)
+    /// color_cycle, rainbow, breath_rainbow and starry_night
     #[arg(long, default_value = "static", value_parser = parse::from_str::<Effect>)]
     pub effect: Effect,
 }

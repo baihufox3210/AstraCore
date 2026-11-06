@@ -352,15 +352,18 @@ screen before lianli-daemon starts) is reported with its error, and the others a
 still applied. Every target is resolved before the first write.
 
 `--effect` selects a controller built-in effect. Aura controllers (onboard LEDs and ARGB
-headers) take every effect of the table in ASUS's own HAL, through the same `41 05` report
-as Static with another effect ID: `static` (1), `breathing`, `strobing`, `color_cycle`,
-`rainbow`, `breath_rainbow`, `rainbow_comet`, `comet`, `moving_flash`, `flash_and_dash`,
-`wave`, `glowing_yoyo`, `starry_night` (13). Speed and direction use further reports that
-are not implemented yet, so each effect runs at the controller's default pace. Other
-backends (keyboard, ENE GPU/DRAM, screen) only have `static` so far. `lighting status`
-lists each target's effects; an effect stays `experimental` until it is confirmed on the
-hardware (so far: static everywhere, breathing on ARGB). A target that does not support
-the requested effect is reported with an error and left unchanged.
+headers) take the effects of the table in ASUS's own HAL through the same `41 05` report as
+Static, with another effect ID. Confirmed on the B850-A: `static`, `breathing`,
+`strobing`, `color_cycle`, `rainbow`, `breath_rainbow`, `starry_night`. Rainbow comet,
+comet, moving flash, flash and dash, wave and glowing yoyo did nothing with that report
+alone (they probably need the speed/parameter reports, not implemented) and are not
+offered. Effects run at the controller's default pace. Other backends (keyboard, ENE
+GPU/DRAM, screen) only have `static` so far. `lighting status` lists each target's effects.
+
+A Sync setting with an effect a following target lacks is shown there as a static color
+(same color and brightness), so an animated Sync setting works across mixed devices. A
+target's own setting (`lighting set`) must be an effect it supports; otherwise the request
+is refused.
 
 `lighting status --json` (IPC `get_lighting`) returns `mode`, `sync`,
 `lighting_config`, `recorded` (whether asusiod restores this configuration) and

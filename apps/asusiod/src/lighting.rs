@@ -4,7 +4,7 @@ use crate::{
     signals,
 };
 use asusio_core::{
-    lighting::{self, ALL, Availability, Config, Request, TargetKind, info},
+    lighting::{self, ALL, Availability, Config, Effect, Request, TargetKind, info},
     service::{
         LightingMode, LightingSource, LightingState, State,
         ipc::{LightingReport, LightingResult, RestoreEntry, TargetResult, TargetStatus},
@@ -25,6 +25,19 @@ const AVAILABILITY_TTL: Duration = Duration::from_secs(10);
 
 /// One alias and the settings it should show.
 type Job = (String, LightingState);
+
+/// What `alias` can show of `desired`: Sync settings reach every following target, and one
+/// whose controller lacks the effect shows the color statically instead of failing (so an
+/// animated Sync setting is possible while, say, the memory only has Static).
+fn fit(config: &Config, alias: &str, desired: LightingState) -> LightingState {
+    match config.targets.get(alias) {
+        Some(target) if !info::supports(&target.device, desired.effect) => LightingState {
+            effect: Effect::Static,
+            ..desired
+        },
+        _ => desired,
+    }
+}
 
 /// The configuration owner the daemon must check (`None` for root).
 fn owner(caller: u32) -> Option<u32> {
@@ -52,7 +65,9 @@ impl Daemon {
         let _hardware = lock(&self.hardware);
         let plans: Vec<_> = jobs
             .iter()
-            .map(|(alias, desired)| lighting::plan(config, &desired.request(alias)))
+            .map(|(alias, desired)| {
+                lighting::plan(config, &fit(config, alias, *desired).request(alias))
+            })
             .collect();
         let results: Vec<_> = jobs
             .iter()
@@ -147,6 +162,16 @@ impl Daemon {
                 ));
             }
         };
+        // A target's own setting must be one it can show (only Sync settings fall back).
+        if let Some(alias) = selected
+            .iter()
+            .find(|alias| !info::supports(&config.targets[**alias].device, desired.effect))
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                format!("{alias} does not support the {} effect", desired.effect),
+            ));
+        }
         let jobs: Vec<Job> = selected
             .iter()
             .map(|alias| ((*alias).to_owned(), desired))
@@ -476,5 +501,57 @@ impl Daemon {
                 return;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use asusio_core::lighting::config::{Device, Target};
+
+    fn target(device: Device) -> Target {
+        Target {
+            white_balance: [255; 3],
+            device,
+        }
+    }
+
+    #[test]
+    fn sync_effects_fall_back_to_static_where_missing() {
+        let config = Config {
+            schema_version: 1,
+            host_fingerprint: None,
+            targets: [
+                (
+                    "fans".to_owned(),
+                    target(Device::AuraArgb {
+                        physical_path: "usb-x/input1".into(),
+                        headers: vec![0],
+                    }),
+                ),
+                (
+                    "ram".to_owned(),
+                    target(Device::Ene {
+                        adapter_name: "a".into(),
+                        adapter_parent: "/sys/devices/x".into(),
+                        address: 0x71,
+                        firmware: "DIMM_LED-0103".into(),
+                        led_count: 8,
+                    }),
+                ),
+            ]
+            .into(),
+        };
+        let rainbow = LightingState {
+            rgb: [0, 0, 255],
+            brightness: 80,
+            calibrated: true,
+            effect: Effect::Rainbow,
+        };
+        assert_eq!(fit(&config, "fans", rainbow), rainbow);
+        let ram = fit(&config, "ram", rainbow);
+        assert_eq!(ram.effect, Effect::Static);
+        assert_eq!((ram.rgb, ram.brightness), (rainbow.rgb, rainbow.brightness));
+        assert_eq!(fit(&config, "unknown", rainbow), rainbow);
     }
 }
