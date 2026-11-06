@@ -98,6 +98,19 @@ pub fn run(action: ManagedAction, config: Option<PathBuf>) -> CliResult {
         ManagedAction::Mode { mode, execute } => {
             return super::daemon::mode(Path::new(DEFAULT_SOCKET), store.path(), mode, execute);
         }
+        ManagedAction::Source {
+            target,
+            source,
+            execute,
+        } => {
+            return super::daemon::source(
+                Path::new(DEFAULT_SOCKET),
+                store.path(),
+                &target,
+                source,
+                execute,
+            );
+        }
         ManagedAction::Status { json } => {
             return super::daemon::lighting_status(Path::new(DEFAULT_SOCKET), store.path(), json);
         }

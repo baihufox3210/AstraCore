@@ -150,6 +150,18 @@ fn dispatch(daemon: &Arc<Daemon>, caller: &Caller, request: Request) -> Response
             mode,
             execute,
         )),
+        Request::SetLightingSource {
+            lighting_config,
+            target,
+            source,
+            execute,
+        } => Response::from_result(daemon.set_lighting_source(
+            lighting_config,
+            caller.uid,
+            &target,
+            source,
+            execute,
+        )),
         Request::RestoreLighting => Response::from_result(Ok(daemon.restore_now())),
         Request::GetProfiles => Response::from_result(Ok(daemon.profiles())),
         Request::SetProfile {

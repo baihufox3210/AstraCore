@@ -7,7 +7,7 @@ use crate::{
     fan_curve::FanCurve,
     fan_map::ProbedChannel,
     lighting::{Availability, Effect, EffectInfo, TargetKind},
-    service::{LightingMode, LightingState},
+    service::{LightingMode, LightingSource, LightingState},
 };
 pub use asusio_backends::nvidia_nvml::{GpuFan, GpuReading};
 use asusio_policy::Operation;
@@ -64,6 +64,15 @@ pub enum Request {
     SetLightingMode {
         lighting_config: PathBuf,
         mode: LightingMode,
+        execute: bool,
+    },
+    /// Preview (or, with `execute`, apply and record) whether one target follows the Sync
+    /// settings or keeps its own. From individual mode this switches to Sync; targets with
+    /// settings of their own keep them.
+    SetLightingSource {
+        lighting_config: PathBuf,
+        target: String,
+        source: LightingSource,
         execute: bool,
     },
     /// Built-in and custom CPU profiles, the recorded selection and the CPU state.
@@ -123,7 +132,9 @@ impl Request {
             Self::SetLighting { execute: true, .. } => Operation::SetLighting,
             Self::RestoreLighting => Operation::RestoreLighting,
             Self::GetLighting { .. } => Operation::ReadStatus,
-            Self::SetSync { execute, .. } | Self::SetLightingMode { execute, .. } => {
+            Self::SetSync { execute, .. }
+            | Self::SetLightingMode { execute, .. }
+            | Self::SetLightingSource { execute, .. } => {
                 if *execute {
                     Operation::SetLighting
                 } else {
@@ -198,6 +209,9 @@ pub struct TargetStatus {
     /// Stored white-balance gains; `FFFFFF` means none.
     pub white_balance: Rgb,
     pub effects: Vec<EffectInfo>,
+    /// Whether the target follows the Sync settings or shows its own.
+    #[serde(default)]
+    pub source: LightingSource,
     /// Individual settings, kept while Sync is active.
     pub individual: Option<LightingState>,
     /// What the current mode applies to this target (`None` if nothing is recorded).
@@ -694,6 +708,18 @@ mod tests {
             read_request(line(mode).as_slice()).unwrap().operation(),
             Operation::PreviewLighting
         );
+        let source = r#"{"method":"set_lighting_source","lighting_config":"/c.json","target":"gpu","source":"custom","execute":true}"#;
+        assert_eq!(
+            read_request(line(source).as_slice()).unwrap().operation(),
+            Operation::SetLighting
+        );
+        let preview = source.replace("true}", "false}");
+        assert_eq!(
+            read_request(line(&preview).as_slice()).unwrap().operation(),
+            Operation::PreviewLighting
+        );
+        let bad = source.replace("custom", "both");
+        assert!(read_request(line(&bad).as_slice()).is_err());
         let get = r#"{"method":"get_lighting","lighting_config":"/c.json"}"#;
         assert_eq!(
             read_request(line(get).as_slice()).unwrap().operation(),

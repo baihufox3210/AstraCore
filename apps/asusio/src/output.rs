@@ -57,6 +57,14 @@ pub mod parse {
         }
     }
 
+    pub fn lighting_source(value: &str) -> Result<asusio_core::service::LightingSource, String> {
+        match value {
+            "sync" => Ok(asusio_core::service::LightingSource::Sync),
+            "custom" => Ok(asusio_core::service::LightingSource::Custom),
+            _ => Err("expected sync or custom".to_owned()),
+        }
+    }
+
     /// `PWM=TEMP:PERCENT,...` for the CPU temperature (`k10temp/Tctl`), default hysteresis.
     pub fn curve(value: &str) -> Result<asusio_core::fan_curve::FanCurve, String> {
         use asusio_core::fan_curve::{CurvePoint, FanCurve, SensorRef};

@@ -6,7 +6,7 @@ use crate::{
 use asusio_core::{
     lighting::{self, ALL, Availability, Config, Request, TargetKind, info},
     service::{
-        LightingMode, LightingState, State,
+        LightingMode, LightingSource, LightingState, State,
         ipc::{LightingReport, LightingResult, RestoreEntry, TargetResult, TargetStatus},
     },
 };
@@ -163,9 +163,17 @@ impl Daemon {
         }
         // Record the desired state even for failed targets so boot restore retries them.
         state.bind_lighting_config(lighting_config, owner);
-        state.switch_lighting_mode(LightingMode::Individual, aliases(&config))?;
+        // In Sync mode the target keeps its own settings from now on (it turns custom);
+        // the others go on following Sync. Otherwise this is individual mode as before.
+        let stay_in_sync = state.lighting_mode == LightingMode::Sync && state.sync.is_some();
+        if !stay_in_sync {
+            state.switch_lighting_mode(LightingMode::Individual, aliases(&config))?;
+        }
         for target in &targets {
             state.lighting.insert(target.alias.clone(), desired);
+            if stay_in_sync {
+                state.lighting_custom.insert(target.alias.clone());
+            }
         }
         Ok(LightingResult {
             executed: true,
@@ -186,7 +194,19 @@ impl Daemon {
         let owner = owner(caller);
         let config = read_config(&lighting_config, owner)?;
         check_brightness(&desired)?;
-        let jobs: Vec<Job> = aliases(&config)
+        // In Sync mode, targets set to custom keep their own settings; from individual
+        // mode every target follows.
+        let followers: Vec<&str> = {
+            let state = lock(&self.state);
+            aliases(&config)
+                .into_iter()
+                .filter(|alias| {
+                    state.lighting_mode != LightingMode::Sync
+                        || state.source(alias) == LightingSource::Sync
+                })
+                .collect()
+        };
+        let jobs: Vec<Job> = followers
             .into_iter()
             .map(|alias| (alias.to_owned(), desired))
             .collect();
@@ -202,7 +222,9 @@ impl Daemon {
         }
         state.bind_lighting_config(lighting_config, owner);
         state.sync = Some(desired);
-        state.switch_lighting_mode(LightingMode::Sync, aliases(&config))?;
+        if state.lighting_mode != LightingMode::Sync {
+            state.switch_lighting_mode(LightingMode::Sync, aliases(&config))?;
+        }
         Ok(LightingResult {
             executed: true,
             targets,
@@ -255,6 +277,58 @@ impl Daemon {
         })
     }
 
+    /// Make one target follow Sync or keep its own settings. Every target whose shown
+    /// setting changes is written (switching from individual mode can move several).
+    pub fn set_lighting_source(
+        &self,
+        lighting_config: PathBuf,
+        caller: u32,
+        target: &str,
+        source: LightingSource,
+        execute: bool,
+    ) -> io::Result<LightingResult> {
+        let owner = owner(caller);
+        let config = read_config(&lighting_config, owner)?;
+        if !config.targets.contains_key(target) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("unknown target: {target}"),
+            ));
+        }
+        let transition = |state: &mut State| {
+            state.bind_lighting_config(lighting_config.clone(), owner);
+            state.set_lighting_source(target, source, aliases(&config))
+        };
+        let before = lock(&self.state).clone();
+        let mut next = before.clone();
+        transition(&mut next)?;
+        let jobs: Vec<Job> = aliases(&config)
+            .into_iter()
+            .filter_map(|alias| {
+                let desired = next.desired(alias)?;
+                (alias == target || before.desired(alias) != Some(desired))
+                    .then(|| (alias.to_owned(), desired))
+            })
+            .collect();
+        let targets = self.run_jobs(&config, &jobs, execute);
+        if !execute {
+            return Ok(LightingResult {
+                executed: false,
+                targets,
+                persist_error: None,
+                mode: next.lighting_mode,
+            });
+        }
+        let mut state = lock(&self.state);
+        transition(&mut state)?;
+        Ok(LightingResult {
+            executed: true,
+            targets,
+            persist_error: self.save(&state),
+            mode: state.lighting_mode,
+        })
+    }
+
     /// Every configured target with its recorded settings, effects and readiness.
     pub fn lighting_report(
         &self,
@@ -272,9 +346,10 @@ impl Daemon {
                 let individual = recorded
                     .then(|| state.lighting.get(alias).copied())
                     .flatten();
-                let applied = match state.lighting_mode {
-                    LightingMode::Individual => individual,
-                    LightingMode::Sync => state.sync,
+                let source = state.source(alias);
+                let applied = match source {
+                    LightingSource::Custom => individual,
+                    LightingSource::Sync => state.sync,
                 };
                 TargetStatus {
                     alias: alias.clone(),
@@ -282,6 +357,7 @@ impl Daemon {
                     backend: info::backend(&target.device).to_owned(),
                     white_balance: target.white_balance,
                     effects: info::effects(&target.device),
+                    source,
                     individual,
                     applied,
                     availability: self.availability(alias, &target.device),

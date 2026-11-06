@@ -324,9 +324,21 @@ overwrites the other mode's settings, and boot restore uses the current mode.
 asusio lighting sync 80C0FF --brightness 70                  # preview
 asusio lighting sync 80C0FF --brightness 70 --execute        # every target; Sync mode
 asusio lighting mode individual --execute                    # back to per-target colors
-asusio lighting set gpu FF0000 --execute                     # one target; individual mode
-asusio lighting status [--json]                              # per-target state
+asusio lighting set gpu FF0000 --execute                     # one target (see below)
+asusio lighting source gpu custom --execute                  # gpu keeps its own color
+asusio lighting source gpu sync --execute                    # gpu follows Sync again
+asusio lighting status [--json]                              # per-target state and source
 ```
+
+Within Sync mode each target either follows the Sync setting or keeps its own
+(`custom`), like Armoury Crate's per-device choice. `lighting source` switches one
+target; a target turning custom without a setting of its own starts from the Sync
+setting, so nothing changes visibly. `lighting set` in Sync mode makes that target
+custom and leaves the others following Sync; in individual mode it behaves as before.
+`lighting sync` writes only the targets that follow it. `lighting source` from
+individual mode switches to Sync, and every target with an individual setting stays
+custom. `lighting mode` switches the whole mode and puts every target on the same side.
+Status reports each target's `source`.
 
 `sync`, `mode` and `status` need asusiod. Per-target calibration still applies in
 Sync mode unless `--uncalibrated` is given. When individual mode is entered from

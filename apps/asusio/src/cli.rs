@@ -5,7 +5,7 @@ use asusio_core::{
     cpu_profile::{Epp, Governor, Mode},
     fan_curve::FanCurve,
     lighting::Effect,
-    service::LightingMode,
+    service::{LightingMode, LightingSource},
 };
 use asusio_types::Rgb;
 use clap::{Args, Parser, Subcommand, ValueEnum};
@@ -225,6 +225,16 @@ pub enum ManagedAction {
         /// sync or individual
         #[arg(value_parser = parse::lighting_mode)]
         mode: LightingMode,
+        #[arg(long)]
+        execute: bool,
+    },
+    /// Preview or set whether one target follows Sync or keeps its own settings (through
+    /// asusiod)
+    Source {
+        target: String,
+        /// sync or custom
+        #[arg(value_parser = parse::lighting_source)]
+        source: LightingSource,
         #[arg(long)]
         execute: bool,
     },

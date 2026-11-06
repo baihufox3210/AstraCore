@@ -7,7 +7,7 @@ use crate::{
 use asusio_core::{
     lighting::{Availability, TargetKind, hex},
     service::{
-        LightingMode, LightingState,
+        LightingMode, LightingSource, LightingState,
         ipc::{
             self, FanState, LightingReport, LightingResult, Request, Status, TargetResult,
             TargetStatus,
@@ -109,6 +109,23 @@ pub fn mode(socket: &Path, lighting_config: &Path, mode: LightingMode, execute: 
     print_result(&result, None)
 }
 
+pub fn source(
+    socket: &Path,
+    lighting_config: &Path,
+    target: &str,
+    source: LightingSource,
+    execute: bool,
+) -> CliResult {
+    let request = Request::SetLightingSource {
+        lighting_config: config_path(lighting_config)?,
+        target: target.to_owned(),
+        source,
+        execute,
+    };
+    let result: LightingResult = ipc::call(socket, &request)?;
+    print_result(&result, None)
+}
+
 fn describe(state: &LightingState) -> String {
     let calibration = if state.calibrated {
         "calibrated"
@@ -148,10 +165,15 @@ fn print_target(target: &TargetStatus) {
         .as_ref()
         .map_or_else(|| "nothing recorded".to_owned(), describe);
     let kind = serde_json::to_value(target.kind).unwrap_or_default();
+    let source = match target.source {
+        LightingSource::Sync => "sync",
+        LightingSource::Custom => "custom",
+    };
     println!(
-        "  {:<10}{:<10}{applied}",
+        "  {:<10}{:<10}{:<8}{applied}",
         target.alias,
-        kind.as_str().unwrap_or_default()
+        kind.as_str().unwrap_or_default(),
+        source
     );
     println!("            {}", readiness(&target.availability));
     if let Some(error) = &target.last_error {

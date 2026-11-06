@@ -11,7 +11,7 @@ use crate::{
 use asusio_types::Rgb;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs, io,
     path::{Path, PathBuf},
 };
@@ -232,6 +232,16 @@ pub enum LightingMode {
     Sync,
 }
 
+/// Where a target takes its lighting from while Sync is active: the Sync settings, or its
+/// own (Armoury Crate's per-device "custom").
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LightingSource {
+    #[default]
+    Sync,
+    Custom,
+}
+
 /// Desired hardware state recorded by the daemon for restoration at boot.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -252,6 +262,10 @@ pub struct State {
     /// Sync settings; kept while individual mode is active.
     #[serde(default)]
     pub sync: Option<LightingState>,
+    /// Aliases that keep their own settings while Sync is active; the others follow the
+    /// Sync settings. Empty in individual mode.
+    #[serde(default)]
+    pub lighting_custom: BTreeSet<String>,
     /// CPU profile to reapply at boot.
     #[serde(default)]
     pub profile: Option<ProfileState>,
@@ -295,10 +309,57 @@ impl State {
 
     /// What the current mode wants `alias` to show, if anything is recorded.
     pub fn desired(&self, alias: &str) -> Option<LightingState> {
-        match self.lighting_mode {
-            LightingMode::Individual => self.lighting.get(alias).copied(),
-            LightingMode::Sync => self.sync,
+        match self.source(alias) {
+            LightingSource::Custom => self.lighting.get(alias).copied(),
+            LightingSource::Sync => self.sync,
         }
+    }
+
+    /// Whether `alias` shows the Sync settings or its own. In individual mode every target
+    /// shows its own.
+    pub fn source(&self, alias: &str) -> LightingSource {
+        if self.lighting_mode == LightingMode::Sync && !self.lighting_custom.contains(alias) {
+            LightingSource::Sync
+        } else {
+            LightingSource::Custom
+        }
+    }
+
+    /// Make `alias` follow the Sync settings or keep its own. A target turning custom
+    /// without settings of its own starts from the Sync settings, so it keeps what it shows.
+    /// From individual mode this switches to Sync, and every target that has settings of
+    /// its own keeps them.
+    pub fn set_lighting_source<'a>(
+        &mut self,
+        alias: &str,
+        source: LightingSource,
+        configured: impl IntoIterator<Item = &'a str>,
+    ) -> io::Result<()> {
+        let Some(sync) = self.sync else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "no Sync settings recorded; set them with `lighting sync` first",
+            ));
+        };
+        if self.lighting_mode == LightingMode::Individual {
+            let own: BTreeSet<String> = configured
+                .into_iter()
+                .filter(|alias| self.lighting.contains_key(*alias))
+                .map(str::to_owned)
+                .collect();
+            self.lighting_custom = own;
+            self.lighting_mode = LightingMode::Sync;
+        }
+        match source {
+            LightingSource::Sync => {
+                self.lighting_custom.remove(alias);
+            }
+            LightingSource::Custom => {
+                self.lighting.entry(alias.to_owned()).or_insert(sync);
+                self.lighting_custom.insert(alias.to_owned());
+            }
+        }
+        Ok(())
     }
 
     /// Aliases the current mode restores: the recorded ones individually, or every
@@ -319,6 +380,7 @@ impl State {
     pub fn bind_lighting_config(&mut self, config: PathBuf, owner: Option<u32>) {
         if self.lighting_config.as_ref() != Some(&config) {
             self.lighting.clear();
+            self.lighting_custom.clear();
         }
         self.lighting_config = Some(config);
         self.config_owner = owner;
@@ -346,6 +408,8 @@ impl State {
                 self.lighting.entry(alias.to_owned()).or_insert(sync);
             }
         }
+        // Switching the whole mode puts every target on the same side.
+        self.lighting_custom.clear();
         self.lighting_mode = mode;
         Ok(())
     }
@@ -466,6 +530,71 @@ mod tests {
         assert_eq!(state.lighting_mode, LightingMode::Individual);
         assert_eq!(state.lighting["gpu"].effect, Effect::Static);
         assert_eq!(state.sync, None);
+    }
+
+    #[test]
+    fn targets_follow_sync_or_keep_their_own() {
+        let red = LightingState {
+            rgb: [255, 0, 0],
+            brightness: 100,
+            calibrated: true,
+            effect: Effect::Static,
+        };
+        let blue = LightingState {
+            rgb: [0, 0, 255],
+            ..red
+        };
+        let configured = ["board", "gpu", "ram"];
+        let mut state = State::default();
+        state.bind_lighting_config("/a/lighting.json".into(), Some(1000));
+        assert!(
+            state
+                .set_lighting_source("gpu", LightingSource::Custom, configured)
+                .is_err(),
+            "Sync must exist first"
+        );
+
+        // From individual mode: targets with their own settings stay custom.
+        state.lighting.insert("gpu".into(), red);
+        state.sync = Some(blue);
+        state
+            .set_lighting_source("board", LightingSource::Sync, configured)
+            .unwrap();
+        assert_eq!(state.lighting_mode, LightingMode::Sync);
+        assert_eq!(state.source("gpu"), LightingSource::Custom);
+        assert_eq!(state.desired("gpu"), Some(red));
+        assert_eq!(state.source("board"), LightingSource::Sync);
+        assert_eq!(state.desired("ram"), Some(blue));
+
+        // Turning custom without settings of its own starts from Sync.
+        state
+            .set_lighting_source("ram", LightingSource::Custom, configured)
+            .unwrap();
+        assert_eq!(state.desired("ram"), Some(blue));
+        assert_eq!(state.source("ram"), LightingSource::Custom);
+
+        // Back to Sync keeps the custom settings for later.
+        state
+            .set_lighting_source("gpu", LightingSource::Sync, configured)
+            .unwrap();
+        assert_eq!(state.desired("gpu"), Some(blue));
+        assert_eq!(state.lighting["gpu"], red);
+
+        // Switching the whole mode puts everyone on one side.
+        state
+            .switch_lighting_mode(LightingMode::Sync, configured)
+            .unwrap();
+        assert!(state.lighting_custom.is_empty());
+        assert_eq!(state.source("ram"), LightingSource::Sync);
+
+        // Another configuration forgets who was custom.
+        state.lighting_custom.insert("ram".into());
+        state.bind_lighting_config("/b/lighting.json".into(), Some(1000));
+        assert!(state.lighting_custom.is_empty());
+
+        // Older state files have no custom set.
+        let loaded: State = serde_json::from_slice(br#"{"schema_version":1}"#).unwrap();
+        assert!(loaded.lighting_custom.is_empty());
     }
 
     #[test]
