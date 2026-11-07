@@ -1,0 +1,19 @@
+[package]
+name = "astracore-core"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+astracore-types = { version = "0.1.0", path = "../astracore-types" }
+
+astracore-backends = { path = "../astracore-backends" }
+astracore-discovery = { path = "../astracore-discovery" }
+astracore-hal = { path = "../astracore-hal" }
+astracore-policy = { path = "../astracore-policy" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+libc = "0.2"
+
+[lints]
+workspace = true

@@ -1,0 +1,12 @@
+[package]
+name = "astracore-discovery"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+astracore-types = { version = "0.1.0", path = "../astracore-types" }
+serde = { version = "1", features = ["derive"] }
+
+[lints]
+workspace = true

@@ -1,0 +1,23 @@
+[Unit]
+Description=AstraCore hardware daemon (lighting restore, fan curves)
+Documentation=https://github.com/baihu/AstraCore
+After=systemd-modules-load.service local-fs.target
+
+[Service]
+Type=simple
+ExecStart=@BINDIR@/astrad --config @CONFIG@
+# Runs after any exit, including crashes, so fans never stay in manual mode.
+ExecStopPost=@BINDIR@/astrad --config @CONFIG@ --release-fans
+Restart=on-failure
+RestartSec=5
+RuntimeDirectory=astracore
+RuntimeDirectoryMode=0755
+StateDirectory=astracore
+StateDirectoryMode=0700
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+
+[Install]
+WantedBy=multi-user.target
