@@ -1,0 +1,12 @@
+[package]
+name = "astra-helper"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+astracore-core = { path = "../../crates/astracore-core" }
+clap = { version = "4.6.7", features = ["derive"] }
+
+[lints]
+workspace = true

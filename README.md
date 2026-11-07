@@ -1,6 +1,18 @@
-# asusio
+# AstraCore
 
 ASUS Hardware I/O Framework for Linux.
+
+The command-line tool is `astra`, the system service `astrad`, and the setup helper
+`astra-helper`; the package, crates and paths are named `astracore`.
+
+**Formerly asusio** (renamed 2026-11-07). The `astracore` package replaces `asusio`. On its
+first start `astrad` copies `/var/lib/asusio/state.json` (fan presets, roles, recorded
+lighting) to `/var/lib/astracore/state.json`, and `astra` copies
+`~/.config/asusio/lighting.json` (targets and calibration) to `~/.config/astracore/` the
+first time it needs it; the old files are left untouched and can be deleted afterwards. A
+custom `/etc/asusio/asusiod.json`, if there is one, has to be moved to
+`/etc/astracore/astrad.json` by hand. The old `asusio` group is no longer used
+(`sudo groupdel asusio`).
 
 ## Goals
 
@@ -8,16 +20,15 @@ ASUS Hardware I/O Framework for Linux.
 - Modular hardware abstraction and backends
 - Safe, permission-controlled hardware operations
 - Desktop-independent API
-- CLI, GUI and desktop integrations
+- CLI and a system service; desktop front ends live in their own repositories
 
 ## Workspace
 
-- `crates/` — reusable Rust libraries
-- `apps/` — CLI, daemon, helper and GUI
+- `crates/` — reusable Rust libraries (`astracore-types`, `-discovery`, `-backends`, `-core`,
+  `-hal`, `-policy`)
+- `apps/` — `astra` (CLI), `astrad` (service), `astra-helper` (setup)
 - `hardware/` — board and device compatibility data
-- `integrations/` — desktop integrations
-- `packaging/` — distribution and service files
-- `tests/` — reusable hardware fixtures
+- `packaging/` — Arch package, systemd unit, sysusers and module loading
 
 ## Development
 
@@ -35,13 +46,13 @@ The vendor color protocol has not been verified.
 
 On the tested NCT6799 board, load the kernel's `nct6775` driver to expose fan
 tachometers and PWM channels. To load it at every boot, put `nct6775` on its
-own line in `/etc/modules-load.d/nct6775.conf`. `asusio fans list` shows
+own line in `/etc/modules-load.d/nct6775.conf`. `astra fans list` shows
 tachometers and PWM channels separately; `--json` includes `schema_version: 1`.
 The PWM number has not been mapped to a physical fan header, so do not infer
 that `fanN` belongs to `pwmN`.
 
-`asusio fans set <pwm-number> <percent>` previews a 30–100% manual duty;
-`--execute` applies it. `asusio fans auto <pwm-number>` previews restoration
+`astra fans set <pwm-number> <percent>` previews a 30–100% manual duty;
+`--execute` applies it. `astra fans auto <pwm-number>` previews restoration
 of the observed Smart Fan IV firmware mode (`pwmN_enable=5`); add `--execute`
 to apply it. Identify the physical channel before writing, especially for CPU
 fans and pumps. Sysfs writes require appropriate permissions. BIOS Q-Fan
@@ -53,7 +64,7 @@ lines when using an interactive zsh session.
 
 ## Sensor output
 
-Use `asusio sensors` for terminal output or `asusio sensors --json` for
+Use `astra sensors` for terminal output or `astra sensors --json` for
 programmatic access. JSON contains `schema_version: 1`, a `devices` array,
 and a `warnings` array for skipped entries. Each device has `sysfs_path`,
 `device_id`, `name`, `display_name`, and `sensors`. Each sensor has a `label`
@@ -63,8 +74,8 @@ omitted.
 
 ## Device output
 
-Use `asusio devices` to list detected PCI and USB devices, or
-`asusio devices --json` to read them as a JSON object with `schema_version: 1`,
+Use `astra devices` to list detected PCI and USB devices, or
+`astra devices --json` to read them as a JSON object with `schema_version: 1`,
 `pci`, `usb`, and `warnings` arrays. PCI entries contain `address`, `vendor_id`, `device_id`, and
 `class_id`. USB entries contain `sysfs_id`, `vendor_id`, `product_id`,
 `manufacturer`, and `product`. Missing or blank optional USB names are
@@ -78,14 +89,14 @@ printed to standard error.
 
 ## Capability model
 
-`asusio-types::Capability` keeps compatibility (`support`), local evidence
+`astracore-types::Capability` keeps compatibility (`support`), local evidence
 (`detection`), and OS-level read/write access separate. A detected capability
 can still be unsupported by a backend or inaccessible to the current user.
 OS-level write access does not authorize hardware writes; policy and backend
 verification are separate requirements. Capability `id` values are intended
 to be stable machine-readable keys.
-`asusio-core::CapabilityRegistry` stores and queries capabilities by ID and
-device ID. Run `asusio capabilities` or `asusio capabilities --json` to inspect
+`astracore-core::CapabilityRegistry` stores and queries capabilities by ID and
+device ID. Run `astra capabilities` or `astra capabilities --json` to inspect
 the capabilities derived from readable hwmon sensors and matching USB/HID IDs.
 The JSON output contains `schema_version: 1`, `capabilities`, and `warnings`.
 Successful sensor reads verify read access only. USB/HID ID matches are
@@ -93,9 +104,9 @@ candidates; they do not establish protocol or RGB control support.
 
 ## HID report descriptor diagnostics
 
-Use `asusio hid-descriptor <device-id>` or add `--json` to inspect the
+Use `astra hid-descriptor <device-id>` or add `--json` to inspect the
 read-only report layout from `/sys/bus/hid/devices/<device-id>/report_descriptor`.
-Get the device ID from `asusio devices --hid`. This command reports Input,
+Get the device ID from `astra devices --hid`. This command reports Input,
 Output, and Feature payload bits and bytes separately from transfer bytes;
 transfer bytes include the one-byte Report ID prefix when present. JSON uses
 an independent `descriptor` object with `schema_version: 1` and does not
@@ -103,7 +114,7 @@ change the `HidDevice` output from `devices --hid --json`.
 
 ## Native Aura HID transport
 
-`asusio lighting aura-static <device-id> <RRGGBB> --headers 0,1,2` previews
+`astra lighting aura-static <device-id> <RRGGBB> --headers 0,1,2` previews
 one vendor-derived static report per selected ARGB header. These header indexes
 are unrelated to hwmon PWM numbers. Add `--execute` to re-query the advertised
 header range and WDL state before writing. The command refuses enabled WDL
@@ -112,7 +123,7 @@ in ASUS MB Manager's `MyAacArgbLedDevice::SetEffect`. It does not send WDL
 ownership changes, S5 effects, or explicit persistent-save commands. Static ARGB color changes have been physically verified on the B850-A
 controller. Other controllers, effects and persistence are not established.
 
-`asusio lighting aura-config <device-id>` previews the configuration query
+`astra lighting aura-config <device-id>` previews the configuration query
 traced in the official ASUS MB Manager 1.00.11 HAL. `--execute` sends one
 64-byte report beginning `41 03 00` and waits at most two seconds for a
 64-byte `41 83` response. This is a protocol diagnostic, not a color command;
@@ -125,12 +136,12 @@ advertised ARGB entry (`03 01 index`, capped at five), and WDL state (`24`).
 These are getter operations traced in the same HAL; no lighting changes are
 requested. Each request has its own two-second response timeout.
 
-Use `asusio lighting probe <device-id>` to validate the detected
+Use `astra lighting probe <device-id>` to validate the detected
 `0b05:1cd2` Aura interface and its 63-byte Output payload with Report ID
 `0x41`. The probe reads only the sysfs report descriptor and reports whether
 the corresponding `/dev/hidraw*` node exists.
 
-`asusio lighting raw-output <device-id> <126-hex-digits>` validates an
+`astra lighting raw-output <device-id> <126-hex-digits>` validates an
 explicit 63-byte vendor payload without sending it. Add `--execute` to send
 one 64-byte HID Output Report (Report ID followed by the payload) through the
 detected hidraw node. This low-level command does not encode RGB colors or
@@ -140,16 +151,16 @@ device. No hidraw number is fixed in the program.
 ## Native lighting backends
 
 OpenRGB CLI integration has been removed. No OpenRGB process or server is needed.
-`asusio lighting list [--json]` reads USB/HID metadata and descriptors to list
+`astra lighting list [--json]` reads USB/HID metadata and descriptors to list
 native interfaces; it does not test write permissions. HID IDs can change after
 replugging, so use the current list. Existing discovery JSON remains unchanged.
 
 ```bash
-cargo build -p asusio
-./target/debug/asusio lighting list
-./target/debug/asusio lighting keyboard-static <vendor-hid-id> FF0000
-./target/debug/asusio lighting screen-static <usb-sysfs-id> FF0000
-./target/debug/asusio lighting aura-board-static <aura-hid-id> FF0000 --locations 0,1
+cargo build -p astra
+./target/debug/astra lighting list
+./target/debug/astra lighting keyboard-static <vendor-hid-id> FF0000
+./target/debug/astra lighting screen-static <usb-sysfs-id> FF0000
+./target/debug/astra lighting aura-board-static <aura-hid-id> FF0000 --locations 0,1
 ```
 
 Each command previews by default. Add `--execute` to write using device access
@@ -168,10 +179,10 @@ Screen lighting remains pending physical verification.
 ### ENE GPU and DRAM
 
 ```bash
-./target/debug/asusio lighting i2c-list
-./target/debug/asusio lighting ene-probe <bus> <hex-address>
-sudo ./target/debug/asusio lighting ene-probe <bus> <hex-address> --execute
-sudo ./target/debug/asusio lighting ene-static <bus> <hex-address> FF0000 --execute
+./target/debug/astra lighting i2c-list
+./target/debug/astra lighting ene-probe <bus> <hex-address>
+sudo ./target/debug/astra lighting ene-probe <bus> <hex-address> --execute
+sudo ./target/debug/astra lighting ene-static <bus> <hex-address> FF0000 --execute
 ```
 
 Use an explicitly identified adapter and RGB address. RTX 3070 Strix has an ENE
@@ -191,7 +202,7 @@ this program. Local ENE probes identified the RTX 3070 at bus 1/address `0x67`
 (`AUDA0-E6K5-0101`, 8 LEDs each). Static red writes completed on all three;
 physical color changes still require confirmation. Bus numbers may change after
 reboot, so recheck adapter metadata and probe identity before use. DIMMs requiring initial address assignment remain unsupported.
-An advisory adapter lock serializes asusio operations; it cannot coordinate with
+An advisory adapter lock serializes AstraCore operations; it cannot coordinate with
 unrelated applications that ignore that lock. A failed multi-packet operation
 can leave some LEDs updated; commands stop on the first error without retry.
 
@@ -209,8 +220,8 @@ USB claim returns `EBUSY`. Direct USB errors now include the operation and node.
 Use the daemon's native Unix socket explicitly to keep its LCD session running:
 
 ```bash
-./target/debug/asusio lighting screen-static 6-9.3 FF0000 --daemon-socket /run/user/1000/lianli-daemon.sock
-./target/debug/asusio lighting screen-static 6-9.3 FF0000 --daemon-socket /run/user/1000/lianli-daemon.sock --execute
+./target/debug/astra lighting screen-static 6-9.3 FF0000 --daemon-socket /run/user/1000/lianli-daemon.sock
+./target/debug/astra lighting screen-static 6-9.3 FF0000 --daemon-socket /run/user/1000/lianli-daemon.sock --execute
 ```
 
 This option needs no OpenRGB and does not stop services or detach drivers. It
@@ -229,7 +240,7 @@ IPC references: [request schema](https://github.com/sgtaziz/lian-li-linux/blob/m
 
 ### ENE color readback
 
-`asusio lighting ene-state 1 67 --execute` reads Direct/Mode and the active
+`astra lighting ene-state 1 67 --execute` reads Direct/Mode and the active
 RGB buffer after firmware identification, without setting colors or applying
 changes. ENE pointer-selection writes are required for these reads. JSON uses
 `schema_version: 1`; `colors_rgb` decodes the wire RBG order. Register intensities
@@ -247,17 +258,17 @@ The configured aliases on the tested machine are `fans` (fan LEDs), `board`,
 fan speed still uses `fans set` / `fans auto`.
 
 ```bash
-./target/debug/asusio lighting targets
-./target/debug/asusio lighting set all 80C0FF
-./target/debug/asusio lighting set gpu FFFFFF
-./target/debug/asusio lighting set all 80C0FF --brightness 50
+./target/debug/astra lighting targets
+./target/debug/astra lighting set all 80C0FF
+./target/debug/astra lighting set gpu FFFFFF
+./target/debug/astra lighting set all 80C0FF --brightness 50
 ```
 
 These commands preview only. To apply all devices, including Aura nodes that
 need elevated permissions, select the user's configuration explicitly:
 
 ```bash
-sudo ./target/debug/asusio lighting --config "$HOME/.config/asusio/lighting.json" set all 80C0FF --execute
+sudo ./target/debug/astra lighting --config "$HOME/.config/astracore/lighting.json" set all 80C0FF --execute
 ```
 
 Under sudo, the program requires `--config` and never silently loads root's
@@ -267,8 +278,8 @@ targets continue, and any failure makes the command exit unsuccessfully. This
 is not an atomic operation across devices; earlier updates cannot be undone
 automatically. All selected bindings are resolved before color writes start.
 
-Calibration is stored in `$XDG_CONFIG_HOME/asusio/lighting.json`, or
-`$HOME/.config/asusio/lighting.json` when XDG_CONFIG_HOME is unset. An explicit
+Calibration is stored in `$XDG_CONFIG_HOME/astracore/lighting.json`, or
+`$HOME/.config/astracore/lighting.json` when XDG_CONFIG_HOME is unset. An explicit
 `lighting --config PATH` overrides this location. The file has mode 0600 and
 is replaced atomically with file/directory synchronization. It is outside the
 repository and is not written into firmware. A machine-id fingerprint binds it
@@ -287,16 +298,16 @@ it cannot make an already saturated blue channel brighter.
 Change or reset a target's gains as the normal user (no hardware color write):
 
 ```bash
-./target/debug/asusio lighting calibrate gpu 3030FF
-./target/debug/asusio lighting calibrate gpu FFFFFF
-./target/debug/asusio lighting set gpu FFFFFF --uncalibrated
+./target/debug/astra lighting calibrate gpu 3030FF
+./target/debug/astra lighting calibrate gpu FFFFFF
+./target/debug/astra lighting set gpu FFFFFF --uncalibrated
 ```
 
 The second command disables compensation; the third bypasses it for that
 invocation only. Existing low-level diagnostics such as `ene-static` remain
 raw and do not apply local compensation. Use `lighting set` for calibrated
 control. Calibration persists across rebuilds/reboots and is loaded on each
-managed command. For automatic color restoration at boot, see the `asusiod`
+managed command. For automatic color restoration at boot, see the `astrad`
 system service below.
 
 For initial installation on another machine, prepare a local schema-1 manifest
@@ -315,19 +326,19 @@ LED count cannot be distinguished by this protocol alone.
 
 ### Sync and individual lighting modes
 
-asusiod keeps two independent lighting settings. **Individual** mode (the default,
+astrad keeps two independent lighting settings. **Individual** mode (the default,
 and the behavior of `lighting set`) gives each target its own color. **Sync** mode
 applies one color, brightness and effect to every configured target. Switching never
 overwrites the other mode's settings, and boot restore uses the current mode.
 
 ```bash
-asusio lighting sync 80C0FF --brightness 70                  # preview
-asusio lighting sync 80C0FF --brightness 70 --execute        # every following target
-asusio lighting mode individual --execute                    # back to per-target colors
-asusio lighting set gpu FF0000 --execute                     # one target (see below)
-asusio lighting source gpu custom --execute                  # gpu keeps its own color
-asusio lighting source gpu sync --execute                    # gpu follows Sync again
-asusio lighting status [--json]                              # per-target state and source
+astra lighting sync 80C0FF --brightness 70                  # preview
+astra lighting sync 80C0FF --brightness 70 --execute        # every following target
+astra lighting mode individual --execute                    # back to per-target colors
+astra lighting set gpu FF0000 --execute                     # one target (see below)
+astra lighting source gpu custom --execute                  # gpu keeps its own color
+astra lighting source gpu sync --execute                    # gpu follows Sync again
+astra lighting status [--json]                              # per-target state and source
 ```
 
 Within Sync mode each target either follows the Sync setting or keeps its own
@@ -340,7 +351,7 @@ custom and leaves the others following Sync; in individual mode it behaves as be
 setting stays custom (nothing it shows changes); the others follow. `lighting mode` switches the whole mode and puts every target on the same side.
 Status reports each target's `source`.
 
-`sync`, `mode` and `status` need asusiod. Per-target calibration still applies in
+`sync`, `mode` and `status` need astrad. Per-target calibration still applies in
 Sync mode unless `--uncalibrated` is given. When individual mode is entered from
 Sync, targets that have no individual setting yet keep the Sync setting as their
 individual one, so nothing changes visibly and every target is restored at boot.
@@ -373,7 +384,7 @@ target's own setting (`lighting set`) must be an effect it supports; otherwise t
 is refused.
 
 `lighting status --json` (IPC `get_lighting`) returns `mode`, `sync`,
-`lighting_config`, `recorded` (whether asusiod restores this configuration) and
+`lighting_config`, `recorded` (whether astrad restores this configuration) and
 `targets`. Each target has `alias`, `kind` (`board`, `argb`, `keyboard`, `graphics`,
 `memory`, `screen` or `other`), `backend`, `white_balance`, `effects` (`effect`,
 `experimental`), `individual`, `applied` (what the current mode shows), `availability`
@@ -385,7 +396,7 @@ each write. ENE targets are classified by firmware: `AUMA0-E6K5-0107` as graphic
 
 ## CPU performance profiles
 
-On `amd-pstate-epp` in active mode (tested: Ryzen 5 7500F, kernel 7.2), asusiod can
+On `amd-pstate-epp` in active mode (tested: Ryzen 5 7500F, kernel 7.2), astrad can
 switch the governor, energy-performance preference (EPP) and boost of every online
 CPU, plus an optional fan-curve preset:
 
@@ -401,14 +412,14 @@ through `custom`; built-in profiles keep `powersave`, where amd-pstate-epp still
 scales up to full speed under load.
 
 ```bash
-asusio profile list                    # profiles, recorded selection, fan presets
-asusio profile status                  # Tctl, fan RPM, PWM state, governor/EPP/boost
-asusio profile set silent              # preview
-asusio profile set silent --execute    # apply through asusiod; restored at boot
-asusio profile set custom --epp balance_power --boost off --fan-preset silent --execute
+astra profile list                    # profiles, recorded selection, fan presets
+astra profile status                  # Tctl, fan RPM, PWM state, governor/EPP/boost
+astra profile set silent              # preview
+astra profile set silent --execute    # apply through astrad; restored at boot
+astra profile set custom --epp balance_power --boost off --fan-preset silent --execute
 ```
 
-All profile commands accept `--json`. `set` always goes through asusiod; `status`
+All profile commands accept `--json`. `set` always goes through astrad; `status`
 falls back to local read-only readings (without profile and power) when the daemon
 is not running. Custom flags are merged over the stored custom profile; switching to
 a built-in profile keeps the custom settings for later.
@@ -427,7 +438,7 @@ leaves CPU settings untouched at boot. A failed CPU write leaves fans and the
 recorded profile unchanged.
 
 **Fan presets** are named curve sets, from two places: the root-owned
-`/etc/asusio/asusiod.json` (below) and presets saved through asusiod (next section),
+`/etc/astracore/astrad.json` (below) and presets saved through astrad (next section),
 which replace configuration presets of the same name. A profile whose preset is not defined uses the
 default `fan_curves`, which are empty by default, so fans stay under firmware
 control; `profile list` and the status `fan` object say so explicitly (`firmware:
@@ -446,7 +457,7 @@ channel of the default curves and all presets.
 
 | Field | Content |
 |---|---|
-| `mode`, `in_sync` | Recorded profile; `in_sync` is false when the CPU was changed outside asusio |
+| `mode`, `in_sync` | Recorded profile; `in_sync` is false when the CPU was changed outside AstraCore |
 | `cpu` | `supported`, `reason`, `governor`, `epp`, `boost` (`null`: mixed or unknown) |
 | `tctl_celsius`, `ccd_celsius` | k10temp `Tctl` and `Tccd1`, `Tccd2`, ... |
 | `cpu_usage` | `total_percent` and `cores_percent` from `/proc/stat` deltas |
@@ -459,11 +470,11 @@ channel of the default curves and all presets.
 | `gpus` | NVIDIA GPUs through NVML: temperature, load, memory-controller load, power and limit, graphics/memory clocks, VRAM, P-state, PCIe link, and per fan `percent`, `target_percent`, `rpm` |
 | `gpu_error`, `scheduler`, `board`, `fan`, `errors` | Why GPU data is missing; sched_ext scheduler; matched board; selected fan curves; failed readings |
 
-A header counts as connected once it has reported a speed; asusiod remembers that
+A header counts as connected once it has reported a speed; astrad remembers that
 for its lifetime, so a fan that stops at low temperature stays listed. Without the
 daemon, `profile status` samples once over 300 ms and shows only headers that are
 spinning. Power comes from root-only energy counters, averaged over at least one
-second and rounded to 0.1 W, so it is only available through asusiod.
+second and rounded to 0.1 W, so it is only available through astrad.
 
 GPU readings use NVML (`libnvidia-ml.so.1`), loaded at runtime; without the NVIDIA
 driver `gpus` is empty and `gpu_error` says why. Only query functions are resolved;
@@ -479,48 +490,48 @@ confirmed by the board's owner, voltages were checked for plausibility only. Dai
 chained fans report one speed per header.
 
 **Pumps never run on curves.** When the board profile marks a header as a pump,
-asusiod refuses to start if `fan_curves` or any `fan_presets` entry uses its PWM
+astrad refuses to start if `fan_curves` or any `fan_presets` entry uses its PWM
 channel; the pump stays under firmware control (the B850-A runs AIO_PUMP at full
 speed by default).
 
 ## System service: boot restore and fan curves
 
-`asusiod` is a root system service. It reapplies your last lighting at boot,
+`astrad` is a root system service. It reapplies your last lighting at boot,
 runs optional fan curves, and lets locally logged-in users control lighting
 without sudo. On Arch Linux, installation takes two commands:
 
 ```bash
-cd packaging/arch && makepkg -si           # build, test, install and start asusiod
-asusio lighting set all 80C0FF --execute   # as your user; restored at every boot
+cd packaging/arch && makepkg -si           # build, test, install and start astrad
+astra lighting set all 80C0FF --execute   # as your user; restored at every boot
 ```
 
 The package installs to `/usr/bin` and loads `i2c-dev` and `nct6775` at boot
-(and immediately). It enables and starts `asusiod.service`. `pacman -R asusio`
-stops and removes it, but keeps `/var/lib/asusio`. Without pacman, run
+(and immediately). It enables and starts `astrad.service`. `pacman -R astracore`
+stops and removes it, but keeps `/var/lib/astracore`. Without pacman, run
 `cargo build --release --workspace`, then
-`sudo ./target/release/asusio-helper install --execute`. The helper does the
+`sudo ./target/release/astra-helper install --execute`. The helper does the
 same into `/usr/local/bin`. Without `--execute`, it only previews.
 
-**How it works.** While asusiod is running, `lighting set --execute` goes through
-its socket, `/run/asusio/asusiod.sock`. The output is labeled "via asusiod",
+**How it works.** While astrad is running, `lighting set --execute` goes through
+its socket, `/run/astracore/astrad.sock`. The output is labeled "via astrad",
 and no sudo is needed. The daemon records the request in
-`/var/lib/asusio/state.json` with the path of your `lighting.json`. The
+`/var/lib/astracore/state.json` with the path of your `lighting.json`. The
 recorded fields are the requested color, brightness and calibration flag, so a
 later `lighting calibrate` applies on the next restore. The configuration must
 be a regular file owned by the requesting user, so the root daemon never reads
 files on another user's behalf. `--direct` writes hardware without the daemon,
 and that write is not recorded. At boot, targets that are not ready are retried
 every 10 seconds for 10 minutes. The screen needs this, because its
-lianli-daemon socket appears only after login. `asusio daemon status` shows
-progress, and `asusio daemon restore` reapplies the recorded lighting now.
+lianli-daemon socket appears only after login. `astra daemon status` shows
+progress, and `astra daemon restore` reapplies the recorded lighting now.
 
-`/etc/asusio/asusiod.json` is optional; a missing file means defaults:
+`/etc/astracore/astrad.json` is optional; a missing file means defaults:
 
 ```json
-{"allow_active_sessions": true, "client_group": "asusio", "restore_lighting": true, "fan_curves": [], "fan_presets": {}}
+{"allow_active_sessions": true, "client_group": "astracore", "restore_lighting": true, "fan_curves": [], "fan_presets": {}}
 ```
 
-**Fan curves** in the root-owned `/etc/asusio/asusiod.json` are the administrator's
+**Fan curves** in the root-owned `/etc/astracore/astrad.json` are the administrator's
 defaults and are not restricted beyond the validation below. The list is empty by
 default. Example:
 
@@ -539,15 +550,15 @@ non-decreasing duty from 30% to 100%, and must end at 100%. Duty rises
 immediately; it falls only after the temperature drops by the hysteresis. A
 missing, ambiguous or implausible sensor reading, a failed PWM write, a daemon
 stop, or a crash returns the channel to firmware control: `ExecStopPost` runs
-`asusiod --release-fans`, and panics abort the process. A released curve stays
+`astrad --release-fans`, and panics abort the process. A released curve stays
 off until the daemon restarts. Restart the service after editing the file.
 
-**Access control.** Each request is checked by `asusio-policy` against
+**Access control.** Each request is checked by `astracore-policy` against
 `SO_PEERCRED` credentials. Root, the daemon's user, members of `client_group`, and
 users with an active local logind session (like udev `uaccess`) are allowed. On
 a shared machine, set `"allow_active_sessions": false`; the socket then becomes
-`0660 root:asusio`, and only group members are allowed. Previews and status do
-not write hardware. The IPC protocol (`asusio_core::service::ipc`) is
+`0660 root:astracore`, and only group members are allowed. Previews and status do
+not write hardware. The IPC protocol (`astracore_core::service::ipc`) is
 newline-delimited JSON with one request per connection. Methods: `status`,
 `set_lighting`, `set_sync`, `set_lighting_mode`, `get_lighting`, `restore_lighting`,
 `get_profiles`, `set_profile`, `telemetry`, `get_fans`, `set_fan_preset`, `delete_fan_preset`,
@@ -558,23 +569,23 @@ authorized like lighting writes.
 ### Saving fan curves without authentication
 
 Any user the policy allows (root, the daemon's user, the client group, or an active local
-session, like lighting and CPU profiles) can save fan presets through asusiod. There is
+session, like lighting and CPU profiles) can save fan presets through astrad. There is
 no password step: saving a preset that the active profile uses changes the running
 curves within one fan interval (2 seconds by default), and the preset is stored in the
 daemon's state file for the next boot.
 
 ```bash
-asusio fans presets                                       # channels, presets, limits
-asusio fans preset set silent --curve 2=40:30,60:45,80:100 --curve 4=45:30,85:100
-asusio fans preset set silent --curve 2=40:30,60:45,80:100 --execute
-asusio fans preset delete silent --execute
+astra fans presets                                       # channels, presets, limits
+astra fans preset set silent --curve 2=40:30,60:45,80:100 --curve 4=45:30,85:100
+astra fans preset set silent --curve 2=40:30,60:45,80:100 --execute
+astra fans preset delete silent --execute
 ```
 
 `--curve` is `PWM=TEMP:PERCENT,...` for the CPU temperature. Names are 1-32 characters of
 `a-z`, `0-9`, `-` and `_`. Each built-in profile selects the preset of
 its own name (`silent`, `balanced`, `performance`); while that preset is not defined the
 fans stay under firmware control. `custom` can select any name
-(`asusio profile set custom --fan-preset NAME`). IPC methods: `get_fans`, `set_fan_preset`, `delete_fan_preset`.
+(`astra profile set custom --fan-preset NAME`). IPC methods: `get_fans`, `set_fan_preset`, `delete_fan_preset`.
 
 Because the socket is open to local sessions, curves that arrive over it are held to
 stricter rules than the root configuration, so a bad or hostile curve cannot starve the
@@ -589,7 +600,7 @@ machine of cooling:
 | At most 16 saved presets | Bounds the state file |
 | One curve per PWM output | `pwm2` drives CPU_OPT and CHA_FAN3 together, so a curve on it moves both |
 
-**Over-temperature guard.** Independently of any curve, asusiod reads the CPU temperature
+**Over-temperature guard.** Independently of any curve, astrad reads the CPU temperature
 every interval. At 90 °C or above, or when it cannot be read, every curve channel is
 handed back to firmware; the curves resume once the temperature is at or below 80 °C.
 `fans presets` and the IPC `get_fans` report `thermal_hold`. A saved curve cannot turn
@@ -597,7 +608,7 @@ the guard off.
 
 A rejected preset changes nothing. `--release-fans` (run by `ExecStopPost` after any exit
 or crash) releases the outputs of the configuration, of every saved preset and of every
-output asusiod ever took over, each to the firmware mode recorded for it, so a crash cannot
+output astrad ever took over, each to the firmware mode recorded for it, so a crash cannot
 leave a fan at a manual duty. Outputs that were never touched are left alone.
 
 ### Any machine: detection, roles, permanence and reset
@@ -608,8 +619,8 @@ hardware, so `fans presets` flags other chips). A board profile in `hardware/boa
 adds names, pump marks and voltages when the DMI board name matches exactly.
 
 **Detection** finds which fan inputs follow which PWM output (including outputs shared by
-two headers) without a profile. `asusio fans detect` previews it; `--execute` starts it in
-asusiod. Every output that is not a pump is raised in turn (never lowered), watched for
+two headers) without a profile. `astra fans detect` previews it; `--execute` starts it in
+astrad. Every output that is not a pump is raised in turn (never lowered), watched for
 12 seconds and restored, about 25 seconds per output. It skips outputs the firmware already
 runs near full speed (a pump is often run that way) and outputs another program controls,
 stops and restores at 85 °C or when the temperature cannot be read, and the fan loop hands
@@ -618,12 +629,12 @@ telemetry (`shares_pwm_with`, the `pwm` of each header).
 
 **Roles.** An output can only be given a curve once it is known to be a fan. The board
 profile says so for a known board (and cannot be overridden). On any other machine the user
-confirms it: `asusio fans role 4 fan`, `asusio fans role 1 pump`, `asusio fans role 4 none`.
+confirms it: `astra fans role 4 fan`, `astra fans role 1 pump`, `astra fans role 4 none`.
 Detection only suggests (a fast input, or an output already at full speed, suggests a pump).
 Nothing assumes "fan" on its own, because a curve that slows a pump to 30% could overheat the
 CPU. An output without a role is refused, and so is a pump.
 
-**Firmware modes.** Before an output is first taken over, asusiod records its `pwmN_enable`
+**Firmware modes.** Before an output is first taken over, astrad records its `pwmN_enable`
 and restores exactly that on release, instead of a fixed value. Only `nct6799` has a known
 default; any other chip whose mode was not recorded is refused rather than guessed.
 
@@ -632,59 +643,59 @@ turns up on a different machine, the recorded roles, detection result and firmwa
 dropped at start (they could be wrong there); saved presets are kept. They are not applied
 (`fans presets` says why) until their outputs are confirmed as fans on the new machine.
 
-**Permanence.** Saved presets live in `/var/lib/asusio/state.json`. They never expire, are
+**Permanence.** Saved presets live in `/var/lib/astracore/state.json`. They never expire, are
 not touched by detection, profile changes, upgrades or `pacman -R` (which keeps the
 directory), and come back at every boot.
 
-**Reset to the system defaults.** `asusio fans reset [--everything] [--execute]` deletes every
+**Reset to the system defaults.** `astra fans reset [--everything] [--execute]` deletes every
 saved preset, clears a custom profile's reference to one, and hands the fans back to firmware
 control at once. `--everything` also forgets the detection result and confirmed roles. The
 configuration file and board profiles are not touched.
 
 ```bash
-asusio fans detect --execute      # background; follow it in `asusio fans presets`
-asusio fans role 4 fan            # confirm what is connected (unknown boards)
-asusio fans reset --execute       # back to firmware control, saved presets deleted
-asusiod --no-board-profile        # diagnostic: behave as on an unknown board
+astra fans detect --execute      # background; follow it in `astra fans presets`
+astra fans role 4 fan            # confirm what is connected (unknown boards)
+astra fans reset --execute       # back to firmware control, saved presets deleted
+astrad --no-board-profile        # diagnostic: behave as on an unknown board
 ```
 
 ## Library architecture and integration
 
-Dependencies flow from applications to `asusio-core`, then native backends and
-read-only discovery, with shared data in `asusio-types`. The core owns reusable
+Dependencies flow from applications to `astracore-core`, then native backends and
+read-only discovery, with shared data in `astracore-types`. The core owns reusable
 lighting orchestration; applications own argument parsing and presentation.
 
 | Module | Responsibility |
 |---|---|
-| `apps/asusio/src/cli.rs` | Clap command schema; colors, addresses and payloads are parsed here |
-| `apps/asusio/src/commands/` | Presentation per area: `system`, `fans`, `profile`, `lighting` (named), `diagnostics` (raw) |
-| `apps/asusio/src/output.rs` | Shared JSON envelope, warnings, hex formatting and value parsers |
-| `asusio_core::lighting` | `Store`, `Request`, `plan`/`execute`, `discover_interfaces`, color helpers |
-| `asusio_core::lighting::config` | Configuration schema, host validation, atomic storage |
-| `asusio_core::lighting::info` | Target kind, supported effects and readiness for front ends |
+| `apps/AstraCore/src/cli.rs` | Clap command schema; colors, addresses and payloads are parsed here |
+| `apps/AstraCore/src/commands/` | Presentation per area: `system`, `fans`, `profile`, `lighting` (named), `diagnostics` (raw) |
+| `apps/AstraCore/src/output.rs` | Shared JSON envelope, warnings, hex formatting and value parsers |
+| `astracore_core::lighting` | `Store`, `Request`, `plan`/`execute`, `discover_interfaces`, color helpers |
+| `astracore_core::lighting::config` | Configuration schema, host validation, atomic storage |
+| `astracore_core::lighting::info` | Target kind, supported effects and readiness for front ends |
 | `lighting::runtime` (internal) | Resolve native device identities and dispatch backends |
-| `asusio-backends` | Device protocols and OS transport; each exposes `DEVICE` (USB ID) and `inspect` |
-| `asusio-discovery` | Read-only sysfs scans: `hid::discover`, `usb::discover`, …; default roots in `sysfs` |
-| `asusio-types` | Shared data: `Rgb`, `UsbId`, device records, `DiscoveryReport`, `Capability` |
-| `asusio_core::service` | Daemon configuration, recorded state and IPC protocol (`ipc::call`) |
-| `asusio_core::fan_curve` | Curve validation, interpolation/hysteresis controller, hwmon/nct6799 adapters |
-| `asusio_core::cpu_profile` | Built-in and custom CPU profiles, fan-preset resolution |
-| `asusio_core::telemetry` | Read-only live readings: CPU, memory, voltages, fan headers, GPUs, sched_ext |
-| `asusio_core::board` | Embedded board profiles: fan headers, pumps, voltage names and scaling |
-| `asusio_core::fan_map` | Fan knowledge of the machine: detection results, roles, hardware fingerprint |
-| `asusio_core::fan_probe` | Detection of which fan inputs follow which output, over an abstract chip |
-| `asusio_backends::nvidia_nvml` | Read-only NVIDIA GPU readings through NVML, loaded at runtime |
-| `asusio_backends::cpu_pstate` | Verified amd-pstate-epp governor/EPP/boost writes with rollback |
-| `asusio-hal` | `TemperatureSensor` / `PwmOutput` traits used by control loops |
-| `asusio-policy` | Per-request authorization of daemon clients |
-| `apps/asusiod` | System service: `daemon` (state), `lighting`, `profile`, `fans`, `server` |
-| `apps/asusio-helper` | Previewable installer for the unit, configuration and module loading |
+| `astracore-backends` | Device protocols and OS transport; each exposes `DEVICE` (USB ID) and `inspect` |
+| `astracore-discovery` | Read-only sysfs scans: `hid::discover`, `usb::discover`, …; default roots in `sysfs` |
+| `astracore-types` | Shared data: `Rgb`, `UsbId`, device records, `DiscoveryReport`, `Capability` |
+| `astracore_core::service` | Daemon configuration, recorded state and IPC protocol (`ipc::call`) |
+| `astracore_core::fan_curve` | Curve validation, interpolation/hysteresis controller, hwmon/nct6799 adapters |
+| `astracore_core::cpu_profile` | Built-in and custom CPU profiles, fan-preset resolution |
+| `astracore_core::telemetry` | Read-only live readings: CPU, memory, voltages, fan headers, GPUs, sched_ext |
+| `astracore_core::board` | Embedded board profiles: fan headers, pumps, voltage names and scaling |
+| `astracore_core::fan_map` | Fan knowledge of the machine: detection results, roles, hardware fingerprint |
+| `astracore_core::fan_probe` | Detection of which fan inputs follow which output, over an abstract chip |
+| `astracore_backends::nvidia_nvml` | Read-only NVIDIA GPU readings through NVML, loaded at runtime |
+| `astracore_backends::cpu_pstate` | Verified amd-pstate-epp governor/EPP/boost writes with rollback |
+| `astracore-hal` | `TemperatureSensor` / `PwmOutput` traits used by control loops |
+| `astracore-policy` | Per-request authorization of daemon clients |
+| `apps/astrad` | System service: `daemon` (state), `lighting`, `profile`, `fans`, `server` |
+| `apps/astra-helper` | Previewable installer for the unit, configuration and module loading |
 
 A Rust application can use the same calibration and identity validation without
 shelling out to the CLI:
 
 ```rust,no_run
-use asusio_core::lighting::{self, Request, Store};
+use astracore_core::lighting::{self, Request, Store};
 
 fn control() -> std::io::Result<()> {
     let store = Store::open(None)?; // or Some(path) for an explicit configuration
@@ -712,10 +723,10 @@ changes between planning and execution may still cause execution errors.
 `lighting::discover_interfaces()` lists validated native interfaces with their
 `InterfaceKind`, without opening hardware nodes.
 
-The compilable `asusio-core/examples/lighting_preview.rs` demonstrates a complete
-read-only client. Run `cargo run -p asusio-core --example lighting_preview`.
+The compilable `astracore-core/examples/lighting_preview.rs` demonstrates a complete
+read-only client. Run `cargo run -p astracore-core --example lighting_preview`.
 
-To add a backend, implement its validated transport in `asusio-backends`
+To add a backend, implement its validated transport in `astracore-backends`
 (export a `DEVICE` ID and an `inspect` function), add a configuration variant in
 `lighting::Device`, and extend the runtime resolution/dispatch matches (plus
 `InterfaceKind` if it should appear in `lighting list`). The common plan,
@@ -725,7 +736,7 @@ host-local configuration.
 
 ### Shared configuration transactions
 
-Library clients use `asusio_core::lighting::Store` for configuration
+Library clients use `astracore_core::lighting::Store` for configuration
 changes. `Store::install` validates and binds a manifest to the current host,
 resolves targets, and refuses to replace an existing configuration.
 `Store::calibrate` locks, reloads, changes one target and atomically saves it.
@@ -733,7 +744,7 @@ The CLI calls these same methods. Direct persistence and native runtime dispatch
 are internal implementation details; use `plan`/`execute` for calibrated control.
 
 ```rust,no_run
-use asusio_core::lighting::Store;
+use astracore_core::lighting::Store;
 fn save_calibration() -> std::io::Result<()> {
     Store::open(None)?.calibrate("gpu", [48, 48, 255])
 }

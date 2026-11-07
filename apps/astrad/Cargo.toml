@@ -1,0 +1,17 @@
+[package]
+name = "astrad"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[dependencies]
+astracore-backends = { path = "../../crates/astracore-backends" }
+astracore-core = { path = "../../crates/astracore-core" }
+astracore-discovery = { path = "../../crates/astracore-discovery" }
+astracore-policy = { path = "../../crates/astracore-policy" }
+clap = { version = "4.6.7", features = ["derive"] }
+libc = "0.2"
+serde_json = "1"
+
+[lints]
+workspace = true

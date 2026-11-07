@@ -1,15 +1,18 @@
 # Local package built from this repository's working tree:
 #   cd packaging/arch && makepkg -si
-pkgname=asusio
+pkgname=astracore
 pkgver=0.1.0.r10.gfc2804c
 pkgrel=1
-pkgdesc="ASUS hardware I/O framework for Linux: native lighting, fan curves and the asusiod service"
+pkgdesc="ASUS hardware I/O framework for Linux: native lighting, fan curves and the astrad service"
 arch=('x86_64')
-url="https://github.com/baihu/asusio"
+url="https://github.com/baihu/AstraCore"
 license=('MIT')
 depends=('gcc-libs' 'glibc')
 makedepends=('cargo')
-install=asusio.install
+# The project was called asusio before 2026-11-07; this package takes its place.
+conflicts=('asusio')
+replaces=('asusio')
+install=astracore.install
 options=('!lto' '!debug')
 
 _repo="$(realpath "$startdir/../..")"
@@ -34,7 +37,7 @@ prepare() {
 build() {
     cd "$_repo"
     export CARGO_TARGET_DIR="$srcdir/target"
-    cargo build --frozen --release -p asusio -p asusiod -p asusio-helper
+    cargo build --frozen --release -p astra -p astrad -p astra-helper
 }
 
 check() {
@@ -45,13 +48,13 @@ check() {
 
 package() {
     local release="$srcdir/target/release"
-    install -Dm755 "$release/asusio" "$release/asusiod" "$release/asusio-helper" -t "$pkgdir/usr/bin/"
+    install -Dm755 "$release/astra" "$release/astrad" "$release/astra-helper" -t "$pkgdir/usr/bin/"
 
     cd "$_repo/packaging/systemd"
-    sed -e 's|@BINDIR@|/usr/bin|g' -e 's|@CONFIG@|/etc/asusio/asusiod.json|g' asusiod.service.in |
-        install -Dm644 /dev/stdin "$pkgdir/usr/lib/systemd/system/asusiod.service"
-    install -Dm644 asusio.sysusers "$pkgdir/usr/lib/sysusers.d/asusio.conf"
-    install -Dm644 asusio-modules.conf "$pkgdir/usr/lib/modules-load.d/asusio.conf"
+    sed -e 's|@BINDIR@|/usr/bin|g' -e 's|@CONFIG@|/etc/astracore/astrad.json|g' astrad.service.in |
+        install -Dm644 /dev/stdin "$pkgdir/usr/lib/systemd/system/astrad.service"
+    install -Dm644 astracore.sysusers "$pkgdir/usr/lib/sysusers.d/astracore.conf"
+    install -Dm644 astracore-modules.conf "$pkgdir/usr/lib/modules-load.d/astracore.conf"
 
     cd "$_repo"
     install -Dm644 LICENSE -t "$pkgdir/usr/share/licenses/$pkgname/"

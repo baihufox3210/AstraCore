@@ -53,73 +53,69 @@ dependencies = [
 ]
 
 [[package]]
-name = "asusio"
+name = "astra"
 version = "0.1.0"
 dependencies = [
- "asusio-backends",
- "asusio-core",
- "asusio-discovery",
- "asusio-types",
+ "astracore-backends",
+ "astracore-core",
+ "astracore-discovery",
+ "astracore-types",
  "clap",
  "serde",
  "serde_json",
 ]
 
 [[package]]
-name = "asusio-backends"
+name = "astra-helper"
 version = "0.1.0"
 dependencies = [
- "asusio-discovery",
- "asusio-types",
- "libc",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "asusio-core"
-version = "0.1.0"
-dependencies = [
- "asusio-backends",
- "asusio-discovery",
- "asusio-hal",
- "asusio-policy",
- "asusio-types",
- "libc",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "asusio-discovery"
-version = "0.1.0"
-dependencies = [
- "asusio-types",
- "serde",
-]
-
-[[package]]
-name = "asusio-gui"
-version = "0.1.0"
-
-[[package]]
-name = "asusio-hal"
-version = "0.1.0"
-
-[[package]]
-name = "asusio-helper"
-version = "0.1.0"
-dependencies = [
- "asusio-core",
+ "astracore-core",
  "clap",
 ]
 
 [[package]]
-name = "asusio-policy"
+name = "astracore-backends"
+version = "0.1.0"
+dependencies = [
+ "astracore-discovery",
+ "astracore-types",
+ "libc",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "astracore-core"
+version = "0.1.0"
+dependencies = [
+ "astracore-backends",
+ "astracore-discovery",
+ "astracore-hal",
+ "astracore-policy",
+ "astracore-types",
+ "libc",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "astracore-discovery"
+version = "0.1.0"
+dependencies = [
+ "astracore-types",
+ "serde",
+]
+
+[[package]]
+name = "astracore-hal"
 version = "0.1.0"
 
 [[package]]
-name = "asusio-types"
+name = "astracore-policy"
+version = "0.1.0"
+
+[[package]]
+name = "astracore-types"
 version = "0.1.0"
 dependencies = [
  "serde",
@@ -127,13 +123,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "asusiod"
+name = "astrad"
 version = "0.1.0"
 dependencies = [
- "asusio-backends",
- "asusio-core",
- "asusio-discovery",
- "asusio-policy",
+ "astracore-backends",
+ "astracore-core",
+ "astracore-discovery",
+ "astracore-policy",
  "clap",
  "libc",
  "serde_json",
