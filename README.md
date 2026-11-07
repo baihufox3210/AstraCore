@@ -507,7 +507,8 @@ astra lighting set all 80C0FF --execute   # as your user; restored at every boot
 ```
 
 paru finds the package once the repository is listed in `/etc/paru.conf` as a PKGBUILD
-repository (`[astracore]` with `Url = https://github.com/baihufox3210/AstraCore`); the
+repository (`[astracore]` with `Url = https://github.com/baihufox3210/AstraCore` and
+`Depth = 3`, since paru looks only two levels deep by default); the
 same `packaging/aur` files can go to the AUR as they are. Both packages install the same
 files and start astrad; installing one replaces the other.
 
