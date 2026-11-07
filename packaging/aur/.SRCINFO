@@ -1,6 +1,6 @@
-pkgbase = astracore-git
+pkgbase = astracore
 	pkgdesc = ASUS hardware I/O framework for Linux: native lighting, fan curves and the astrad service
-	pkgver = 0.1.0.r27.geeb2115
+	pkgver = 0.1.0
 	pkgrel = 1
 	url = https://github.com/baihufox3210/AstraCore
 	install = astracore.install
@@ -10,12 +10,11 @@ pkgbase = astracore-git
 	makedepends = git
 	depends = gcc-libs
 	depends = glibc
-	provides = astracore
-	conflicts = astracore
 	conflicts = asusio
+	replaces = asusio
 	options = !lto
 	options = !debug
-	source = git+https://github.com/baihufox3210/AstraCore.git
-	sha256sums = SKIP
+	source = AstraCore::git+https://github.com/baihufox3210/AstraCore.git#tag=v0.1.0
+	sha256sums = 6ff23d948bfdd89ee00c59d122d6f3cf13586c7c8e9cbd8decb2e538242f5758
 
-pkgname = astracore-git
+pkgname = astracore

@@ -498,17 +498,22 @@ speed by default).
 
 `astrad` is a root system service. It reapplies your last lighting at boot,
 runs optional fan curves, and lets locally logged-in users control lighting
-without sudo. On Arch Linux, install it from the AUR, or build this checkout:
+without sudo. On Arch Linux, install a release with paru, or build this checkout:
 
 ```bash
-paru -S astracore-git                      # from the AUR (GitHub main)
-cd packaging/arch && makepkg -si           # or: build, test and install this working tree
+paru -S astracore                          # the latest release (tag v<version> on GitHub)
+cd packaging/arch && makepkg -si           # or: the working tree, as astracore-local
 astra lighting set all 80C0FF --execute   # as your user; restored at every boot
 ```
 
-Both packages install the same files and start astrad. `packaging/aur` holds the AUR
-package (`PKGBUILD`, `.SRCINFO`, install script); after changing its PKGBUILD, regenerate
-`.SRCINFO` with `makepkg --printsrcinfo > .SRCINFO`. AstraCore is only verified on an
+paru finds the package once the repository is listed in `/etc/paru.conf` as a PKGBUILD
+repository (`[astracore]` with `Url = https://github.com/baihufox3210/AstraCore`); the
+same `packaging/aur` files can go to the AUR as they are. Both packages install the same
+files and start astrad; installing one replaces the other.
+
+To release: tag the commit `v<version>`, set `pkgver` in `packaging/aur/PKGBUILD`, refresh
+its checksum with `makepkg -g` and `.SRCINFO` with `makepkg --printsrcinfo > .SRCINFO`, then
+push the tag and the branch. AstraCore is only verified on an
 ASUS ROG STRIX B850-A GAMING WIFI7 S NEO; other boards are unverified.
 
 The package installs to `/usr/bin` and loads `i2c-dev` and `nct6775` at boot

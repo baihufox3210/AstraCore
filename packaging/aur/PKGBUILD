@@ -1,10 +1,10 @@
 # Maintainer: baihu <baihu3210@gmail.com>
 #
-# AUR package built from the GitHub repository. The local package in packaging/arch builds
-# the working tree instead.
-pkgname=astracore-git
-_name=AstraCore
-pkgver=0.1.0.r27.geeb2115
+# Release package: builds the tagged version v$pkgver from GitHub. To release, tag the
+# commit, set pkgver, refresh the checksum with `makepkg -g` and .SRCINFO with
+# `makepkg --printsrcinfo > .SRCINFO`. packaging/arch builds the working tree instead.
+pkgname=astracore
+pkgver=0.1.0
 pkgrel=1
 pkgdesc="ASUS hardware I/O framework for Linux: native lighting, fan curves and the astrad service"
 arch=('x86_64')
@@ -12,19 +12,13 @@ url="https://github.com/baihufox3210/AstraCore"
 license=('MIT')
 depends=('gcc-libs' 'glibc')
 makedepends=('cargo' 'git')
-provides=('astracore')
-conflicts=('astracore' 'asusio')
+conflicts=('asusio')
+replaces=('asusio')
 install=astracore.install
 options=('!lto' '!debug')
-source=("git+$url.git")
-sha256sums=('SKIP')
-
-pkgver() {
-    cd "$_name"
-    local version
-    version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
-    printf '%s.r%s.g%s' "$version" "$(git rev-list --count HEAD)" "$(git rev-parse --short HEAD)"
-}
+source=("AstraCore::git+$url.git#tag=v$pkgver")
+sha256sums=('6ff23d948bfdd89ee00c59d122d6f3cf13586c7c8e9cbd8decb2e538242f5758')
+_name=AstraCore
 
 prepare() {
     cd "$_name"

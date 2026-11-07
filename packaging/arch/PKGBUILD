@@ -1,6 +1,7 @@
-# Local package built from this repository's working tree:
-#   cd packaging/arch && makepkg -si
-pkgname=astracore
+# Local package built from this repository's working tree, for trying changes before a
+# release:  cd packaging/arch && makepkg -si
+# packaging/aur builds the released versions as `astracore`; this one takes its place.
+pkgname=astracore-local
 pkgver=0.1.0.r10.gfc2804c
 pkgrel=1
 pkgdesc="ASUS hardware I/O framework for Linux: native lighting, fan curves and the astrad service"
@@ -10,7 +11,8 @@ license=('MIT')
 depends=('gcc-libs' 'glibc')
 makedepends=('cargo')
 # The project was called asusio before 2026-11-07; this package takes its place.
-conflicts=('asusio')
+provides=('astracore')
+conflicts=('astracore' 'asusio')
 replaces=('asusio')
 install=astracore.install
 options=('!lto' '!debug')
