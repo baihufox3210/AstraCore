@@ -506,17 +506,6 @@ cd packaging/arch && makepkg -si           # or: the working tree, as astracore-
 astra lighting set all 80C0FF --execute   # as your user; restored at every boot
 ```
 
-paru finds the package once the repository is listed in `/etc/paru.conf` as a PKGBUILD
-repository (`[astracore]` with `Url = https://github.com/baihufox3210/AstraCore` and
-`Depth = 3`, since paru looks only two levels deep by default); the
-same `packaging/aur` files can go to the AUR as they are. Both packages install the same
-files and start astrad; installing one replaces the other.
-
-To release: tag the commit `v<version>`, set `pkgver` in `packaging/aur/PKGBUILD`, refresh
-its checksum with `makepkg -g` and `.SRCINFO` with `makepkg --printsrcinfo > .SRCINFO`, then
-push the tag and the branch. AstraCore is only verified on an
-ASUS ROG STRIX B850-A GAMING WIFI7 S NEO; other boards are unverified.
-
 The package installs to `/usr/bin` and loads `i2c-dev` and `nct6775` at boot
 (and immediately). It enables and starts `astrad.service`. `pacman -R astracore`
 stops and removes it, but keeps `/var/lib/astracore`. Without pacman, run
@@ -670,6 +659,43 @@ astra fans role 4 fan            # confirm what is connected (unknown boards)
 astra fans reset --execute       # back to firmware control, saved presets deleted
 astrad --no-board-profile        # diagnostic: behave as on an unknown board
 ```
+
+### Installing on another machine
+
+AstraCore is not on the AUR yet, so paru is pointed at this repository once. With paru
+installed (`yay -S paru-bin` if not):
+
+```bash
+printf '\n[astracore]\nUrl = https://github.com/baihufox3210/AstraCore\nDepth = 3\n' | sudo tee -a /etc/paru.conf
+paru -Sy --pkgbuilds && paru -S astracore
+```
+
+This lists the repository in `/etc/paru.conf` as a PKGBUILD repository; `Depth = 3` is
+needed because paru looks only two levels deep by default and the package is in
+`packaging/aur`. From then on `paru -Syu` updates AstraCore with everything else. Note that
+`paru -Sya` does not refresh PKGBUILD repositories (`-a` means AUR only).
+
+Without paru, one command builds and installs the latest release, but it is not updated
+automatically (to update, run `git pull && makepkg -si` in that folder):
+
+```bash
+git clone https://github.com/baihufox3210/AstraCore && cd AstraCore/packaging/aur && makepkg -si
+```
+
+Once AstraCore is on the AUR, `paru -S astracore` alone is enough; the files in
+`packaging/aur` can go there as they are. Both packages (`astracore` and `astracore-local`)
+install the same files and start astrad; installing one replaces the other.
+
+AstraCore is only verified on an ASUS ROG STRIX B850-A GAMING WIFI7 S NEO. On other
+boards fan and lighting support is unverified: check what `astra` detects before writing
+to the hardware.
+
+### Releasing
+
+To release: tag the commit `v<version>`, set `pkgver` in `packaging/aur/PKGBUILD`, refresh
+its checksum with `makepkg -g` and `.SRCINFO` with `makepkg --printsrcinfo > .SRCINFO`, then
+push the tag and the branch (`git push origin main v<version>`). `paru -Syu` then offers the
+new version; ordinary commits do not.
 
 ## Library architecture and integration
 
