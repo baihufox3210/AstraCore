@@ -1,0 +1,60 @@
+# Maintainer: baihu <baihu3210@gmail.com>
+#
+# AUR package built from the GitHub repository. The local package in packaging/arch builds
+# the working tree instead.
+pkgname=astracore-git
+_name=AstraCore
+pkgver=0.1.0.r27.geeb2115
+pkgrel=1
+pkgdesc="ASUS hardware I/O framework for Linux: native lighting, fan curves and the astrad service"
+arch=('x86_64')
+url="https://github.com/baihufox3210/AstraCore"
+license=('MIT')
+depends=('gcc-libs' 'glibc')
+makedepends=('cargo' 'git')
+provides=('astracore')
+conflicts=('astracore' 'asusio')
+install=astracore.install
+options=('!lto' '!debug')
+source=("git+$url.git")
+sha256sums=('SKIP')
+
+pkgver() {
+    cd "$_name"
+    local version
+    version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+    printf '%s.r%s.g%s' "$version" "$(git rev-list --count HEAD)" "$(git rev-parse --short HEAD)"
+}
+
+prepare() {
+    cd "$_name"
+    export RUSTUP_TOOLCHAIN=stable
+    cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+build() {
+    cd "$_name"
+    export RUSTUP_TOOLCHAIN=stable
+    export CARGO_TARGET_DIR=target
+    cargo build --frozen --release -p astra -p astrad -p astra-helper
+}
+
+check() {
+    cd "$_name"
+    export RUSTUP_TOOLCHAIN=stable
+    export CARGO_TARGET_DIR=target
+    cargo test --frozen --release --workspace
+}
+
+package() {
+    cd "$_name"
+    install -Dm755 target/release/astra target/release/astrad target/release/astra-helper -t "$pkgdir/usr/bin/"
+
+    sed -e 's|@BINDIR@|/usr/bin|g' -e 's|@CONFIG@|/etc/astracore/astrad.json|g' packaging/systemd/astrad.service.in |
+        install -Dm644 /dev/stdin "$pkgdir/usr/lib/systemd/system/astrad.service"
+    install -Dm644 packaging/systemd/astracore.sysusers "$pkgdir/usr/lib/sysusers.d/astracore.conf"
+    install -Dm644 packaging/systemd/astracore-modules.conf "$pkgdir/usr/lib/modules-load.d/astracore.conf"
+
+    install -Dm644 LICENSE -t "$pkgdir/usr/share/licenses/$pkgname/"
+    install -Dm644 README.md -t "$pkgdir/usr/share/doc/$pkgname/"
+}

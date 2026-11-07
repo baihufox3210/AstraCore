@@ -498,12 +498,18 @@ speed by default).
 
 `astrad` is a root system service. It reapplies your last lighting at boot,
 runs optional fan curves, and lets locally logged-in users control lighting
-without sudo. On Arch Linux, installation takes two commands:
+without sudo. On Arch Linux, install it from the AUR, or build this checkout:
 
 ```bash
-cd packaging/arch && makepkg -si           # build, test, install and start astrad
+paru -S astracore-git                      # from the AUR (GitHub main)
+cd packaging/arch && makepkg -si           # or: build, test and install this working tree
 astra lighting set all 80C0FF --execute   # as your user; restored at every boot
 ```
+
+Both packages install the same files and start astrad. `packaging/aur` holds the AUR
+package (`PKGBUILD`, `.SRCINFO`, install script); after changing its PKGBUILD, regenerate
+`.SRCINFO` with `makepkg --printsrcinfo > .SRCINFO`. AstraCore is only verified on an
+ASUS ROG STRIX B850-A GAMING WIFI7 S NEO; other boards are unverified.
 
 The package installs to `/usr/bin` and loads `i2c-dev` and `nct6775` at boot
 (and immediately). It enables and starts `astrad.service`. `pacman -R astracore`

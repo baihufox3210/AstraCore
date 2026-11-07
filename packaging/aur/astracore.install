@@ -1,0 +1,20 @@
+# pacman runs its sysusers/daemon-reload hooks after these scriptlets, so do the
+# minimum needed here to start astrad immediately.
+post_install() {
+    systemd-sysusers astracore.conf
+    modprobe -a i2c-dev nct6775 || true
+    systemctl daemon-reload
+    systemctl enable --now astrad.service
+    echo "==> AstraCore: state recorded by asusio (fan presets, roles, lighting) is carried over"
+    echo "    on the first start. On a new machine, run once as your user:"
+    echo "    astra lighting set all <RRGGBB> --execute   (no sudo; restored at every boot)"
+}
+
+post_upgrade() {
+    systemctl daemon-reload
+    systemctl try-restart astrad.service
+}
+
+pre_remove() {
+    systemctl disable --now astrad.service
+}
